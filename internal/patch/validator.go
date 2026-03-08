@@ -1,6 +1,6 @@
-// Package patch - Patch validasyon implementasyonu.
+// Package patch contains patch validation implementation.
 //
-//   - Hassas dosyalar korunur
+// - Sensitive files are protected.
 package patch
 
 import (
@@ -43,7 +43,7 @@ func NewValidator(maxFiles, maxLines int) *Validator {
 
 func (v *Validator) Validate(p *models.Patch) error {
 	if p == nil {
-		return fmt.Errorf("patch nil olamaz")
+		return fmt.Errorf("patch cannot be nil")
 	}
 
 	if len(p.Files) > v.maxFiles {

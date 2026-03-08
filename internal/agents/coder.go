@@ -1,15 +1,4 @@
-// Package agents - Coder Agent implementasyonu.
-//
-// Girdi:
-//
-//   - Plan (planner'dan)
-//
-//   - Relevant files (context builder'dan)
-//
-//   - Unified diff patch
-//
-// Kurallar:
-//   - Mevcut kod stilini takip et
+// Package agents contains the Coder agent implementation.
 package agents
 
 import (
@@ -38,7 +27,7 @@ func (c *Coder) Execute(input *Input) (*Output, error) {
 	}
 
 	if input.Plan == nil {
-		return nil, fmt.Errorf("coder: plan gerekli")
+		return nil, fmt.Errorf("coder: plan is required")
 	}
 
 	patch := &models.Patch{

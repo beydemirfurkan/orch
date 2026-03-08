@@ -1,4 +1,4 @@
-// Package cmd - diff komutu.
+// Package cmd implements the diff command.
 package cmd
 
 import (
@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// diffCmd, orch diff komutunu temsil eder.
+// diffCmd represents the `orch diff` command.
 var diffCmd = &cobra.Command{
 	Use:   "diff",
 	Short: "Shows the generated patch",
@@ -30,7 +30,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 	rawDiff, err := runstore.LoadLatestPatch(cwd)
 	if err != nil {
-		fmt.Println("📄 Son uretilen patch:")
+		fmt.Println("📄 Latest generated patch:")
 		fmt.Println("─────────────────────────────────────")
 		fmt.Println("No generated patch found yet.")
 		fmt.Println("Run 'orch run <task>' first.")

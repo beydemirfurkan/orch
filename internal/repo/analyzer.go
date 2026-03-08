@@ -32,7 +32,7 @@ func (a *Analyzer) Analyze() (*models.RepoMap, error) {
 		if err != nil {
 		}
 
-		// Gizli dizinleri ve .orch dizinini atla
+		// Skip hidden directories and .orch.
 		if info.IsDir() {
 			name := info.Name()
 			if strings.HasPrefix(name, ".") || name == "node_modules" || name == "vendor" {
@@ -41,7 +41,7 @@ func (a *Analyzer) Analyze() (*models.RepoMap, error) {
 			return nil
 		}
 
-		// Relative path hesapla
+		// Resolve relative path.
 		relPath, err := filepath.Rel(a.rootPath, path)
 		if err != nil {
 			return nil
@@ -65,7 +65,7 @@ func (a *Analyzer) Analyze() (*models.RepoMap, error) {
 	repoMap.PackageManager = a.detectPackageManager()
 	repoMap.TestFramework = a.detectTestFramework()
 
-	// Repo map'i dosyaya yaz
+	// Persist repo map.
 	if err := a.saveRepoMap(repoMap); err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func (a *Analyzer) saveRepoMap(repoMap *models.RepoMap) error {
 
 	data, err := json.MarshalIndent(repoMap, "", "  ")
 	if err != nil {
-		return fmt.Errorf("repo map serialize edilemedi: %w", err)
+		return fmt.Errorf("failed to serialize repo map: %w", err)
 	}
 
 	mapPath := filepath.Join(orchDir, "repo-map.json")

@@ -1,4 +1,4 @@
-// Package cmd - init komutu.
+// Package cmd implements the init command.
 package cmd
 
 import (
@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// initCmd, orch init komutunu temsil eder.
+// initCmd represents the `orch init` command.
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Analyze repository and create configuration",
@@ -29,7 +29,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	fmt.Println("🔍 Repository analiz ediliyor...")
+	fmt.Println("🔍 Analyzing repository...")
 
 	if err := config.EnsureOrchDir(cwd); err != nil {
 		return err
@@ -41,7 +41,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("✅ .orch/config.json created")
 
-	// Repository analizi
+	// Repository analysis
 	analyzer := repo.NewAnalyzer(cwd)
 	repoMap, err := analyzer.Analyze()
 	if err != nil {

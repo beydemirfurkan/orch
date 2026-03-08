@@ -27,7 +27,7 @@ type Orchestrator struct {
 	patchPipeline  *patch.Pipeline
 	toolRegistry   *tools.Registry
 	repoRoot       string
-	// verbose, detayli log ciktisi.
+	// verbose controls detailed log output.
 	verbose bool
 }
 
@@ -70,12 +70,12 @@ func (o *Orchestrator) Run(task *models.Task) (*models.RunState, error) {
 		o.log.Log("policy", "decision", message)
 	})
 
-	// 1. Repository Analizi
+	// 1. Repository analysis
 	if err := o.stepAnalyze(state); err != nil {
 		return o.fail(state, err)
 	}
 
-	// 2. Planlama
+	// 2. Planning
 	if err := o.stepPlan(state); err != nil {
 		return o.fail(state, err)
 	}
@@ -117,7 +117,7 @@ func (o *Orchestrator) Plan(task *models.Task) (*models.Plan, error) {
 	})
 	o.log.Log("orchestrator", "plan-only", fmt.Sprintf("Generating plan: %s", task.Description))
 
-	// Repository analizi
+	// Repository analysis
 	repoMap, err := o.analyzer.Analyze()
 	if err != nil {
 		return nil, fmt.Errorf("repository analysis failed: %w", err)
@@ -230,11 +230,11 @@ func (o *Orchestrator) stepTest(state *models.RunState) error {
 
 	result, err := o.toolRegistry.Execute("run_tests", map[string]string{"command": o.cfg.Commands.Test})
 	if err != nil {
-		return fmt.Errorf("test komutu baslatilamadi: %w", err)
+		return fmt.Errorf("failed to start test command: %w", err)
 	}
 
 	if result == nil {
-		return fmt.Errorf("test sonucu alinamadi")
+		return fmt.Errorf("test result was not returned")
 	}
 
 	state.TestResults = strings.TrimSpace(result.Output)

@@ -1,14 +1,4 @@
-// Package agents - Reviewer Agent implementasyonu.
-//
-// Girdi:
-//
-//   - Patch (coder'dan)
-//
-//   - Plan (planner'dan)
-//
-//   - Test results (test runner'dan)
-//
-//   - Decision: accept | revise
+// Package agents contains the Reviewer agent implementation.
 package agents
 
 import (
@@ -37,12 +27,12 @@ func (r *Reviewer) Execute(input *Input) (*Output, error) {
 	}
 
 	if input.Patch == nil {
-		return nil, fmt.Errorf("reviewer: patch gerekli")
+		return nil, fmt.Errorf("reviewer: patch is required")
 	}
 
 	review := &models.ReviewResult{
 		Decision:    models.ReviewAccept,
-		Comments:    []string{"Patch incelendi"},
+		Comments:    []string{"Patch reviewed"},
 		Suggestions: []string{},
 	}
 

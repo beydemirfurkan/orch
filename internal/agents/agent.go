@@ -1,4 +1,4 @@
-// - Coder:   Plan + ilgili dosyalar → unified diff patch
+// - Coder: plan + relevant files -> unified diff patch
 package agents
 
 import (

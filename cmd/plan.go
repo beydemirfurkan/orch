@@ -1,7 +1,4 @@
-// Package cmd - plan komutu.
-//
-//   - Riskler
-//   - Test stratejisi
+// Package cmd implements the plan command.
 package cmd
 
 import (
@@ -15,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// planCmd, orch plan komutunu temsil eder.
+// planCmd represents the `orch plan` command.
 var planCmd = &cobra.Command{
 	Use:   "plan [task]",
 	Short: "Generates an implementation plan for a task",
@@ -79,14 +76,14 @@ func runPlan(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(plan.Risks) > 0 {
-		fmt.Println("\n⚠️  Riskler:")
+		fmt.Println("\n⚠️  Risks:")
 		for _, r := range plan.Risks {
 			fmt.Printf("  - %s\n", r)
 		}
 	}
 
 	if plan.TestStrategy != "" {
-		fmt.Printf("\n🧪 Test Stratejisi: %s\n", plan.TestStrategy)
+		fmt.Printf("\n🧪 Test Strategy: %s\n", plan.TestStrategy)
 	}
 
 	return nil

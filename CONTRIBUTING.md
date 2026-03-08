@@ -23,18 +23,6 @@ go test ./...
 - Add or update tests for behavior changes.
 - Keep safety-related behavior explicit and deterministic.
 
-## Language Guard
-
-This repository enforces English-only source/docs checks.
-
-Run locally:
-
-```bash
-bash scripts/check-language.sh
-```
-
-If an exception is required, add a single-line regex rule to `.language-guard-allowlist` with a short explanation.
-
 ## Pull Request Guidelines
 
 Before opening a PR:

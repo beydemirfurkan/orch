@@ -1,4 +1,4 @@
-// Alt komutlar: init, plan, run, diff, apply, logs.
+// Subcommands: init, plan, run, diff, apply, logs.
 package cmd
 
 import (
@@ -38,7 +38,7 @@ func Execute() {
 }
 
 func init() {
-	// Global flag'ler
+	// Global flags
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output mode")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Configuration file path")
 }

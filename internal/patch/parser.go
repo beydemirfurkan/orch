@@ -1,6 +1,6 @@
-// Package patch - Unified diff parser implementasyonu.
+// Package patch contains unified diff parser implementation.
 //
-// Desteklenen format:
+// Supported format:
 //
 //	diff --git a/file b/file
 //	--- a/file

@@ -1,7 +1,6 @@
 # Orch
 
 [![Go Version](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go)](https://go.dev/)
-[![Language Guard](https://img.shields.io/github/actions/workflow/status/beydemirfurkan/orch/language-guard.yml?branch=main&label=language%20guard)](https://github.com/beydemirfurkan/orch/actions/workflows/language-guard.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Orch is a local-first, AI-powered coding orchestrator for repositories.
@@ -153,14 +152,6 @@ Run tests:
 ```bash
 go test ./...
 ```
-
-The repository includes a language guard to enforce English-only source/docs content:
-
-```bash
-bash scripts/check-language.sh
-```
-
-If an exception is required, add a single-line regex rule to `.language-guard-allowlist`.
 
 ## Roadmap and Specs
 

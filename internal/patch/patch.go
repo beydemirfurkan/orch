@@ -1,7 +1,7 @@
 // 2. Parse - unified diff format parse
-// 5. Apply - working tree'ye uygulama
+// 5. Apply - apply to working tree
 //
-// - Patch boyut limitleri enforce edilir
+// - Patch size limits are enforced
 package patch
 
 import (
@@ -54,7 +54,7 @@ func (p *Pipeline) Preview(patch *models.Patch) string {
 	return patch.RawDiff
 }
 
-// Apply, patch'i working tree'ye uygular.
+// Apply applies patch content to the working tree.
 func (p *Pipeline) Apply(patch *models.Patch, repoRoot string, dryRun bool) error {
 	return p.applier.Apply(patch, repoRoot, dryRun)
 }

@@ -1,4 +1,4 @@
-// Package cmd - logs komutu.
+// Package cmd implements the logs command.
 //
 //	[analyzer] scanning repository
 //	[planner] generating plan
@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// logsCmd, orch logs komutunu temsil eder.
+// logsCmd represents the `orch logs` command.
 var logsCmd = &cobra.Command{
 	Use:   "logs [run-id]",
 	Short: "Shows execution trace",

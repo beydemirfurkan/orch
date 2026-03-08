@@ -1,6 +1,4 @@
-// Package patch - Patch uygulama implementasyonu.
-//
-// Modlar:
+// Package patch contains patch application implementation.
 package patch
 
 import (
@@ -41,10 +39,10 @@ func NewApplier() *Applier {
 	return &Applier{}
 }
 
-// Apply, patch'i belirtilen repository'ye uygular.
+// Apply applies patch content to the target repository.
 func (a *Applier) Apply(p *models.Patch, repoRoot string, dryRun bool) error {
 	if p == nil || strings.TrimSpace(p.RawDiff) == "" {
-		return fmt.Errorf("uygulanacak patch yok")
+		return fmt.Errorf("no patch to apply")
 	}
 
 	args := []string{"apply"}
@@ -79,7 +77,7 @@ func (a *Applier) Apply(p *models.Patch, repoRoot string, dryRun bool) error {
 			}
 		}
 
-		mode := "uygulama"
+		mode := "apply"
 		if dryRun {
 			mode = "dry-run check"
 		}

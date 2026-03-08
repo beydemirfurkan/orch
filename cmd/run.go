@@ -1,4 +1,4 @@
-// Package cmd - run komutu.
+// Package cmd implements the run command.
 //
 // Pipeline:
 //
@@ -20,7 +20,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// runCmd, orch run komutunu temsil eder.
+// runCmd represents the `orch run` command.
 var runCmd = &cobra.Command{
 	Use:   "run [task]",
 	Short: "Runs full pipeline",
@@ -82,15 +82,15 @@ func runRun(cmd *cobra.Command, args []string) error {
 		state.ProjectID = sessionCtx.ProjectID
 		state.SessionID = sessionCtx.Session.ID
 		if saveErr := runstore.SaveRunState(cwd, state); saveErr != nil {
-			fmt.Printf("\n⚠ Run state kaydedilemedi: %s\n", saveErr)
+			fmt.Printf("\n⚠ Failed to save run state: %s\n", saveErr)
 		}
 		if saveErr := sessionCtx.Store.SaveRunState(state); saveErr != nil {
-			fmt.Printf("\n⚠ SQLite run state kaydedilemedi: %s\n", saveErr)
+			fmt.Printf("\n⚠ Failed to save SQLite run state: %s\n", saveErr)
 		}
 	}
 
 	if err != nil {
-		fmt.Printf("\n❌ Pipeline basarisiz: %s\n", err.Error())
+		fmt.Printf("\n❌ Pipeline failed: %s\n", err.Error())
 		if state != nil {
 			printRunResultSummary(state)
 			if len(state.UnresolvedFailures) > 0 {
@@ -103,7 +103,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 				fmt.Printf("\n🩹 Best Patch Summary: %s\n", state.BestPatchSummary)
 			}
 			if strings.TrimSpace(state.TestResults) != "" {
-				fmt.Println("\n🧪 Test Ozeti:")
+				fmt.Println("\n🧪 Test Summary:")
 				fmt.Println(state.TestResults)
 			}
 		}

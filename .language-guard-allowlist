@@ -1,7 +1,0 @@
-# English-only language guard allowlist
-#
-# One regex per line. Each regex is matched against guard output lines in the form:
-#   path/to/file:line_number:line_content
-#
-# Use this only for intentional exceptions that must remain in the repository.
-# Keep this file minimal.

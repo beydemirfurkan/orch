@@ -1,16 +1,4 @@
-// Package agents - Planner Agent implementasyonu.
-//
-// Girdi:
-//
-//   - Repo summary (analyzer'dan)
-//
-//   - File index (repo map'ten)
-//
-//   - FilesToInspect: incelenmesi gereken dosyalar
-//
-//   - Risks: tespit edilen riskler
-//
-//   - TestStrategy: test stratejisi
+// Package agents contains the Planner agent implementation.
 package agents
 
 import (

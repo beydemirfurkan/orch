@@ -24,7 +24,7 @@ var validTransitions = map[models.RunStatus][]models.RunStatus{
 func Transition(state *models.RunState, target models.RunStatus) error {
 	allowed, ok := validTransitions[state.Status]
 	if !ok {
-		return fmt.Errorf("bilinmeyen durum: %s", state.Status)
+		return fmt.Errorf("unknown state: %s", state.Status)
 	}
 
 	for _, valid := range allowed {

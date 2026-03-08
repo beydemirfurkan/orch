@@ -35,7 +35,7 @@ type Plan struct {
 	Steps          []PlanStep `json:"steps"`
 	FilesToModify  []string   `json:"files_to_modify"`
 	FilesToInspect []string   `json:"files_to_inspect"`
-	// Risks, tespit edilen riskler.
+	// Risks contains identified risks.
 	Risks        []string `json:"risks"`
 	TestStrategy string   `json:"test_strategy"`
 }
@@ -49,7 +49,7 @@ type PlanStep struct {
 type Patch struct {
 	TaskID string      `json:"task_id"`
 	Files  []PatchFile `json:"files"`
-	// RawDiff, ham unified diff metni.
+	// RawDiff contains raw unified diff text.
 	RawDiff string `json:"raw_diff"`
 }
 
@@ -61,7 +61,7 @@ type PatchFile struct {
 
 type RepoMap struct {
 	RootPath string `json:"root_path"`
-	// Language, tespit edilen ana programlama dili.
+	// Language is the detected primary language.
 	Language       string `json:"language"`
 	PackageManager string `json:"package_manager"`
 	TestFramework  string `json:"test_framework"`

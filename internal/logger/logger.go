@@ -71,7 +71,7 @@ func (l *Logger) Save() error {
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
-		return fmt.Errorf("loglar serialize edilemedi: %w", err)
+		return fmt.Errorf("failed to serialize logs: %w", err)
 	}
 
 	logPath := filepath.Join(runsDir, l.runID+".json")

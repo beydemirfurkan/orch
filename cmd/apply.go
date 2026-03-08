@@ -1,6 +1,4 @@
-// Package cmd - apply komutu.
-//
-// Flag'ler:
+// Package cmd implements the apply command.
 package cmd
 
 import (
@@ -19,7 +17,7 @@ var (
 	approveDestructive bool
 )
 
-// applyCmd, orch apply komutunu temsil eder.
+// applyCmd represents the `orch apply` command.
 var applyCmd = &cobra.Command{
 	Use:   "apply",
 	Short: "Applies generated patch",

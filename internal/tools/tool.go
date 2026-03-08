@@ -1,8 +1,8 @@
 // - ReadFile: file reading
 // - WriteFile: file writing
 // - ListFiles: file listing
-// - SearchCode: kod arama
-// - ApplyPatch: patch uygulama
+// - SearchCode: code search
+// - ApplyPatch: patch application
 package tools
 
 import (

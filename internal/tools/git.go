@@ -1,4 +1,4 @@
-// - ApplyPatch: patch uygulama
+// - ApplyPatch: patch application
 package tools
 
 import (
@@ -47,9 +47,9 @@ func NewApplyPatchTool(repoRoot string) *ApplyPatchTool {
 
 func (t *ApplyPatchTool) Name() string { return "apply_patch" }
 
-func (t *ApplyPatchTool) Description() string { return "Git patch uygular" }
+func (t *ApplyPatchTool) Description() string { return "Applies a patch with git" }
 
-// Execute, patch'i git apply ile uygular.
+// Execute applies a patch using git apply.
 func (t *ApplyPatchTool) Execute(params map[string]string) (*models.ToolResult, error) {
 	patchContent, ok := params["patch"]
 	if !ok {
