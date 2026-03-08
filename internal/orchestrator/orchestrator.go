@@ -32,6 +32,7 @@ type Orchestrator struct {
 	patchPipeline  *patch.Pipeline
 	toolRegistry   *tools.Registry
 	repoRoot       string
+	providerReady  bool
 	// verbose controls detailed log output.
 	verbose bool
 }
@@ -85,6 +86,7 @@ func (o *Orchestrator) attachProviderRuntime() {
 	registry.Register(client)
 	router := providers.NewRouter(o.cfg, registry)
 	runtime := &agents.LLMRuntime{Router: router}
+	o.providerReady = true
 
 	if planner, ok := o.planner.(*agents.Planner); ok {
 		planner.SetRuntime(runtime)
@@ -113,6 +115,11 @@ func (o *Orchestrator) Run(task *models.Task) (*models.RunState, error) {
 
 	o.log.Log("orchestrator", "start", fmt.Sprintf("Task started: %s", task.Description))
 	o.log.Log("policy", "mode", "policy decision mode=run read_only=false")
+	if o.providerReady {
+		o.log.Log("provider", "status", fmt.Sprintf("active=openai planner=%s coder=%s reviewer=%s auth_mode=%s", o.cfg.Provider.OpenAI.Models.Planner, o.cfg.Provider.OpenAI.Models.Coder, o.cfg.Provider.OpenAI.Models.Reviewer, o.cfg.Provider.OpenAI.AuthMode))
+	} else {
+		o.log.Log("provider", "status", "inactive; falling back to local agent behavior")
+	}
 	o.toolRegistry = tools.DefaultRegistryWithPolicy(o.repoRoot, buildPolicy(o.cfg, tools.ModeRun), func(message string) {
 		o.log.Log("policy", "decision", message)
 	})
@@ -203,6 +210,9 @@ func (o *Orchestrator) stepPlan(state *models.RunState) error {
 		return err
 	}
 	o.log.Log("planner", "plan", "Generating plan...")
+	if o.providerReady {
+		o.log.Log("provider", "planner", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Planner))
+	}
 
 	input := &agents.Input{
 		Task: &state.Task,
@@ -231,6 +241,9 @@ func (o *Orchestrator) stepCode(state *models.RunState) error {
 		return err
 	}
 	o.log.Log("coder", "code", "Generating code changes...")
+	if o.providerReady {
+		o.log.Log("provider", "coder", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Coder))
+	}
 
 	input := &agents.Input{
 		Task:    &state.Task,
@@ -302,6 +315,9 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 		return err
 	}
 	o.log.Log("reviewer", "review", "Reviewing changes...")
+	if o.providerReady {
+		o.log.Log("provider", "reviewer", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Reviewer))
+	}
 
 	input := &agents.Input{
 		Task:        &state.Task,

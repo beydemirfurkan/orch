@@ -11,6 +11,7 @@ import (
 var (
 	verbose    bool
 	configPath string
+	sessionID  string
 )
 
 var rootCmd = &cobra.Command{
@@ -29,7 +30,7 @@ Usage examples:
   orch logs                            # Show execution trace`,
 	Version: "0.1.0",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return startInteractiveShell()
+		return startInteractiveShell(sessionID)
 	},
 }
 
@@ -44,4 +45,5 @@ func init() {
 	// Global flags
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output mode")
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "Configuration file path")
+	rootCmd.PersistentFlags().StringVarP(&sessionID, "session", "s", "", "Resume interactive session id")
 }

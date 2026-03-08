@@ -40,7 +40,9 @@ func (l *Logger) Log(actor, step, message string) {
 	l.entries = append(l.entries, entry)
 	l.mu.Unlock()
 
-	fmt.Printf("[%s] %s\n", actor, message)
+	if l.verbose {
+		fmt.Printf("[%s] %s\n", actor, message)
+	}
 }
 
 func (l *Logger) Verbose(actor, step, message string) {

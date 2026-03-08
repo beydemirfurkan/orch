@@ -8,15 +8,9 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 	"strings"
-	"time"
 
-	"github.com/furkanbeydemir/orch/internal/config"
 	"github.com/furkanbeydemir/orch/internal/models"
-	"github.com/furkanbeydemir/orch/internal/orchestrator"
-	"github.com/furkanbeydemir/orch/internal/runstore"
-	runlock "github.com/furkanbeydemir/orch/internal/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -35,59 +29,20 @@ func init() {
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get working directory: %w", err)
-	}
-
-	cfg, err := config.Load(cwd)
-	if err != nil {
-		return fmt.Errorf("failed to load configuration (run 'orch init' first): %w", err)
-	}
-
-	sessionCtx, err := loadSessionContext(cwd)
+	result, err := executeRunTask(args[0])
 	if err != nil {
 		return err
 	}
-	defer sessionCtx.Store.Close()
 
-	execRoot := sessionCtx.ExecutionRoot(cwd)
-
-	task := &models.Task{
-		ID:          fmt.Sprintf("task-%d", time.Now().UnixNano()),
-		Description: args[0],
-		CreatedAt:   time.Now(),
+	for _, warning := range result.Warnings {
+		fmt.Printf("\n⚠ %s\n", warning)
 	}
 
-	var unlock func() error
-	if cfg.Safety.FeatureFlags.RepoLock {
-		lockManager := runlock.NewLockManager(execRoot, time.Duration(cfg.Safety.LockStaleAfterSeconds)*time.Second)
-		unlock, err = lockManager.Acquire(task.ID)
-		if err != nil {
-			return fmt.Errorf("run blocked by repository lock: %w", err)
-		}
-		defer func() {
-			if unlockErr := unlock(); unlockErr != nil {
-				fmt.Printf("\n⚠ Failed to release lock: %s\n", unlockErr)
-			}
-		}()
-	}
+	fmt.Printf("🚀 Starting pipeline: %s\n\n", result.Task.Description)
+	printRunContextSummary(result.ProjectID, result.SessionName, result.Worktree, result.CWD, result.ExecRoot)
 
-	fmt.Printf("🚀 Starting pipeline: %s\n\n", task.Description)
-	printRunContextSummary(sessionCtx.ProjectID, sessionCtx.Session.Name, sessionCtx.Session.Worktree, cwd, execRoot)
-
-	orch := orchestrator.New(cfg, execRoot, verbose)
-	state, err := orch.Run(task)
-	if state != nil {
-		state.ProjectID = sessionCtx.ProjectID
-		state.SessionID = sessionCtx.Session.ID
-		if saveErr := runstore.SaveRunState(cwd, state); saveErr != nil {
-			fmt.Printf("\n⚠ Failed to save run state: %s\n", saveErr)
-		}
-		if saveErr := sessionCtx.Store.SaveRunState(state); saveErr != nil {
-			fmt.Printf("\n⚠ Failed to save SQLite run state: %s\n", saveErr)
-		}
-	}
+	state := result.State
+	err = result.Err
 
 	if err != nil {
 		fmt.Printf("\n❌ Pipeline failed: %s\n", err.Error())
