@@ -28,6 +28,9 @@ Usage examples:
   orch apply                           # Apply patch
   orch logs                            # Show execution trace`,
 	Version: "0.1.0",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return startInteractiveShell()
+	},
 }
 
 func Execute() {

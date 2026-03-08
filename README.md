@@ -66,6 +66,14 @@ go run . <command>
 
 ## Quick Start
 
+Start interactive mode:
+
+```bash
+./orch
+```
+
+In interactive mode, plain text runs a full task pipeline. Use `/help` to view commands.
+
 Initialize Orch in a repository:
 
 ```bash
