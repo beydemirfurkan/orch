@@ -80,6 +80,26 @@ Initialize Orch in a repository:
 ./orch init
 ```
 
+Enable OpenAI/Codex provider execution:
+
+```bash
+export OPENAI_API_KEY="your_api_key"
+```
+
+Validate runtime/provider setup:
+
+```bash
+./orch doctor
+```
+
+Inspect provider and model mapping:
+
+```bash
+./orch provider
+./orch model
+./orch model set coder gpt-5.3-codex
+```
+
 Inspect current session context:
 
 ```bash

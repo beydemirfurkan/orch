@@ -3,6 +3,7 @@ package orchestrator
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/furkanbeydemir/orch/internal/logger"
 	"github.com/furkanbeydemir/orch/internal/models"
 	"github.com/furkanbeydemir/orch/internal/patch"
+	"github.com/furkanbeydemir/orch/internal/providers"
+	"github.com/furkanbeydemir/orch/internal/providers/openai"
 	"github.com/furkanbeydemir/orch/internal/repo"
 	"github.com/furkanbeydemir/orch/internal/tools"
 )
@@ -35,7 +38,7 @@ func New(cfg *config.Config, repoRoot string, verbose bool) *Orchestrator {
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	log := logger.New(runID, repoRoot, verbose)
 
-	return &Orchestrator{
+	orch := &Orchestrator{
 		cfg:            cfg,
 		log:            log,
 		analyzer:       repo.NewAnalyzer(repoRoot),
@@ -47,6 +50,37 @@ func New(cfg *config.Config, repoRoot string, verbose bool) *Orchestrator {
 		toolRegistry:   tools.DefaultRegistryWithPolicy(repoRoot, buildPolicy(cfg, tools.ModeRun), nil),
 		repoRoot:       repoRoot,
 		verbose:        verbose,
+	}
+
+	orch.attachProviderRuntime()
+
+	return orch
+}
+
+func (o *Orchestrator) attachProviderRuntime() {
+	if o == nil || o.cfg == nil {
+		return
+	}
+	if !o.cfg.Provider.Flags.OpenAIEnabled {
+		return
+	}
+	if strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.APIKeyEnv)) == "" {
+		return
+	}
+
+	registry := providers.NewRegistry()
+	registry.Register(openai.New(o.cfg.Provider.OpenAI))
+	router := providers.NewRouter(o.cfg, registry)
+	runtime := &agents.LLMRuntime{Router: router}
+
+	if planner, ok := o.planner.(*agents.Planner); ok {
+		planner.SetRuntime(runtime)
+	}
+	if coder, ok := o.coder.(*agents.Coder); ok {
+		coder.SetRuntime(runtime)
+	}
+	if reviewer, ok := o.reviewer.(*agents.Reviewer); ok {
+		reviewer.SetRuntime(runtime)
 	}
 }
 

@@ -15,11 +15,12 @@ const (
 )
 
 type Config struct {
-	Version  int           `json:"version"`
-	Models   ModelConfig   `json:"models"`
-	Commands CommandConfig `json:"commands"`
-	Patch    PatchConfig   `json:"patch"`
-	Safety   SafetyConfig  `json:"safety"`
+	Version  int            `json:"version"`
+	Models   ModelConfig    `json:"models"`
+	Commands CommandConfig  `json:"commands"`
+	Patch    PatchConfig    `json:"patch"`
+	Safety   SafetyConfig   `json:"safety"`
+	Provider ProviderConfig `json:"provider"`
 }
 
 type ModelConfig struct {
@@ -59,6 +60,31 @@ type SafetyFeatureFlags struct {
 	PatchConflictReporting bool `json:"patchConflictReporting"`
 }
 
+type ProviderConfig struct {
+	Default string               `json:"default"`
+	OpenAI  OpenAIProviderConfig `json:"openai"`
+	Flags   ProviderFeatureFlags `json:"flags"`
+}
+
+type OpenAIProviderConfig struct {
+	APIKeyEnv       string             `json:"apiKeyEnv"`
+	BaseURL         string             `json:"baseURL"`
+	ReasoningEffort string             `json:"reasoningEffort"`
+	TimeoutSeconds  int                `json:"timeoutSeconds"`
+	MaxRetries      int                `json:"maxRetries"`
+	Models          ProviderRoleModels `json:"models"`
+}
+
+type ProviderRoleModels struct {
+	Planner  string `json:"planner"`
+	Coder    string `json:"coder"`
+	Reviewer string `json:"reviewer"`
+}
+
+type ProviderFeatureFlags struct {
+	OpenAIEnabled bool `json:"openaiEnabled"`
+}
+
 func DefaultConfig() *Config {
 	return &Config{
 		Version: 1,
@@ -89,6 +115,24 @@ func DefaultConfig() *Config {
 				RepoLock:               true,
 				RetryLimits:            true,
 				PatchConflictReporting: true,
+			},
+		},
+		Provider: ProviderConfig{
+			Default: "openai",
+			OpenAI: OpenAIProviderConfig{
+				APIKeyEnv:       "OPENAI_API_KEY",
+				BaseURL:         "https://api.openai.com/v1",
+				ReasoningEffort: "medium",
+				TimeoutSeconds:  90,
+				MaxRetries:      3,
+				Models: ProviderRoleModels{
+					Planner:  "gpt-5.3-codex",
+					Coder:    "gpt-5.3-codex",
+					Reviewer: "gpt-5.3-codex",
+				},
+			},
+			Flags: ProviderFeatureFlags{
+				OpenAIEnabled: true,
 			},
 		},
 	}
@@ -138,11 +182,48 @@ func applyDefaults(cfg *Config, rawJSON []byte) {
 		cfg.Safety.RequireDestructiveApproval = defaults.Safety.RequireDestructiveApproval
 	}
 
+	if !presence.providerPresent {
+		cfg.Provider = defaults.Provider
+	} else {
+		if cfg.Provider.Default == "" {
+			cfg.Provider.Default = defaults.Provider.Default
+		}
+		if cfg.Provider.OpenAI.APIKeyEnv == "" {
+			cfg.Provider.OpenAI.APIKeyEnv = defaults.Provider.OpenAI.APIKeyEnv
+		}
+		if cfg.Provider.OpenAI.BaseURL == "" {
+			cfg.Provider.OpenAI.BaseURL = defaults.Provider.OpenAI.BaseURL
+		}
+		if cfg.Provider.OpenAI.ReasoningEffort == "" {
+			cfg.Provider.OpenAI.ReasoningEffort = defaults.Provider.OpenAI.ReasoningEffort
+		}
+		if cfg.Provider.OpenAI.TimeoutSeconds <= 0 {
+			cfg.Provider.OpenAI.TimeoutSeconds = defaults.Provider.OpenAI.TimeoutSeconds
+		}
+		if cfg.Provider.OpenAI.MaxRetries <= 0 {
+			cfg.Provider.OpenAI.MaxRetries = defaults.Provider.OpenAI.MaxRetries
+		}
+		if cfg.Provider.OpenAI.Models.Planner == "" {
+			cfg.Provider.OpenAI.Models.Planner = defaults.Provider.OpenAI.Models.Planner
+		}
+		if cfg.Provider.OpenAI.Models.Coder == "" {
+			cfg.Provider.OpenAI.Models.Coder = defaults.Provider.OpenAI.Models.Coder
+		}
+		if cfg.Provider.OpenAI.Models.Reviewer == "" {
+			cfg.Provider.OpenAI.Models.Reviewer = defaults.Provider.OpenAI.Models.Reviewer
+		}
+		if !presence.providerFlagsPresent {
+			cfg.Provider.Flags = defaults.Provider.Flags
+		}
+	}
+
 }
 
 type fieldPresence struct {
 	featureFlagsPresent               bool
 	requireDestructiveApprovalPresent bool
+	providerPresent                   bool
+	providerFlagsPresent              bool
 }
 
 func parsePresence(rawJSON []byte) fieldPresence {
@@ -165,6 +246,15 @@ func parsePresence(rawJSON []byte) fieldPresence {
 
 	_, result.featureFlagsPresent = safety["featureFlags"]
 	_, result.requireDestructiveApprovalPresent = safety["requireDestructiveApproval"]
+
+	providerRaw, ok := root["provider"]
+	if ok {
+		result.providerPresent = true
+		var provider map[string]json.RawMessage
+		if err := json.Unmarshal(providerRaw, &provider); err == nil {
+			_, result.providerFlagsPresent = provider["flags"]
+		}
+	}
 
 	return result
 

@@ -191,6 +191,8 @@ func parseInteractiveInput(input string) ([]string, error) {
 			return []string{parts[0], strings.Join(parts[1:], " ")}, nil
 		case "diff", "apply", "init":
 			return []string{parts[0]}, nil
+		case "doctor", "provider", "model":
+			return append([]string{parts[0]}, parts[1:]...), nil
 		case "logs":
 			return append([]string{"logs"}, parts[1:]...), nil
 		case "session":
@@ -223,6 +225,11 @@ func helpText() string {
 		"  /plan <task>           Generate plan only",
 		"  /diff                  Show latest patch",
 		"  /apply                 Apply latest patch (dry-run by default)",
+		"  /doctor                Validate provider/runtime readiness",
+		"  /provider              Show provider configuration",
+		"  /provider set openai   Set default provider",
+		"  /model                 Show role model mapping",
+		"  /model set <role> <model>  Set role model",
 		"  /logs [run-id]         Show logs",
 		"  /session <subcommand>  Session operations",
 		"  /init                  Initialize project",
