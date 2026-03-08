@@ -68,6 +68,8 @@ type ProviderConfig struct {
 
 type OpenAIProviderConfig struct {
 	APIKeyEnv       string             `json:"apiKeyEnv"`
+	AccountTokenEnv string             `json:"accountTokenEnv"`
+	AuthMode        string             `json:"authMode"`
 	BaseURL         string             `json:"baseURL"`
 	ReasoningEffort string             `json:"reasoningEffort"`
 	TimeoutSeconds  int                `json:"timeoutSeconds"`
@@ -121,6 +123,8 @@ func DefaultConfig() *Config {
 			Default: "openai",
 			OpenAI: OpenAIProviderConfig{
 				APIKeyEnv:       "OPENAI_API_KEY",
+				AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
+				AuthMode:        "api_key",
 				BaseURL:         "https://api.openai.com/v1",
 				ReasoningEffort: "medium",
 				TimeoutSeconds:  90,
@@ -190,6 +194,12 @@ func applyDefaults(cfg *Config, rawJSON []byte) {
 		}
 		if cfg.Provider.OpenAI.APIKeyEnv == "" {
 			cfg.Provider.OpenAI.APIKeyEnv = defaults.Provider.OpenAI.APIKeyEnv
+		}
+		if cfg.Provider.OpenAI.AccountTokenEnv == "" {
+			cfg.Provider.OpenAI.AccountTokenEnv = defaults.Provider.OpenAI.AccountTokenEnv
+		}
+		if cfg.Provider.OpenAI.AuthMode == "" {
+			cfg.Provider.OpenAI.AuthMode = defaults.Provider.OpenAI.AuthMode
 		}
 		if cfg.Provider.OpenAI.BaseURL == "" {
 			cfg.Provider.OpenAI.BaseURL = defaults.Provider.OpenAI.BaseURL

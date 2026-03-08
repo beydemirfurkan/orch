@@ -2,12 +2,14 @@
 package orchestrator
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/furkanbeydemir/orch/internal/agents"
+	"github.com/furkanbeydemir/orch/internal/auth"
 	"github.com/furkanbeydemir/orch/internal/config"
 	"github.com/furkanbeydemir/orch/internal/logger"
 	"github.com/furkanbeydemir/orch/internal/models"
@@ -65,11 +67,22 @@ func (o *Orchestrator) attachProviderRuntime() {
 		return
 	}
 	if strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.APIKeyEnv)) == "" {
-		return
+		if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) != "account" {
+			return
+		}
 	}
 
 	registry := providers.NewRegistry()
-	registry.Register(openai.New(o.cfg.Provider.OpenAI))
+	client := openai.New(o.cfg.Provider.OpenAI)
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		_ = ctx
+		state, err := auth.Load(o.repoRoot)
+		if err != nil || state == nil {
+			return "", err
+		}
+		return state.AccessToken, nil
+	})
+	registry.Register(client)
 	router := providers.NewRouter(o.cfg, registry)
 	runtime := &agents.LLMRuntime{Router: router}
 

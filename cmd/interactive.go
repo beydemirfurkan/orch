@@ -191,7 +191,7 @@ func parseInteractiveInput(input string) ([]string, error) {
 			return []string{parts[0], strings.Join(parts[1:], " ")}, nil
 		case "diff", "apply", "init":
 			return []string{parts[0]}, nil
-		case "doctor", "provider", "model":
+		case "doctor", "provider", "model", "auth":
 			return append([]string{parts[0]}, parts[1:]...), nil
 		case "logs":
 			return append([]string{"logs"}, parts[1:]...), nil
@@ -228,6 +228,10 @@ func helpText() string {
 		"  /doctor                Validate provider/runtime readiness",
 		"  /provider              Show provider configuration",
 		"  /provider set openai   Set default provider",
+		"  /auth status            Show authentication status",
+		"  /auth login --mode account --token <token>  Save account token",
+		"  /auth login --mode api_key  Use API key mode",
+		"  /auth logout            Remove stored account token",
 		"  /model                 Show role model mapping",
 		"  /model set <role> <model>  Set role model",
 		"  /logs [run-id]         Show logs",

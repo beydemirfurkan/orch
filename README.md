@@ -92,6 +92,20 @@ Validate runtime/provider setup:
 ./orch doctor
 ```
 
+Use account-style auth mode (OpenCode-like flow) by storing an access token locally:
+
+```bash
+./orch auth login --mode account --token "your_account_token"
+./orch auth status
+./orch auth logout
+```
+
+Switch back to API key mode:
+
+```bash
+./orch auth login --mode api_key
+```
+
 Inspect provider and model mapping:
 
 ```bash

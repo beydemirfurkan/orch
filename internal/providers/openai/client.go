@@ -17,9 +17,10 @@ import (
 )
 
 type Client struct {
-	cfg        config.OpenAIProviderConfig
-	httpClient *http.Client
-	rand       *rand.Rand
+	cfg          config.OpenAIProviderConfig
+	httpClient   *http.Client
+	rand         *rand.Rand
+	resolveToken func(context.Context) (string, error)
 }
 
 type requester interface {
@@ -38,7 +39,18 @@ func New(cfg config.OpenAIProviderConfig) *Client {
 			Timeout: timeout,
 		},
 		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
+		resolveToken: func(ctx context.Context) (string, error) {
+			_ = ctx
+			return "", nil
+		},
 	}
+}
+
+func (c *Client) SetTokenResolver(resolver func(context.Context) (string, error)) {
+	if resolver == nil {
+		return
+	}
+	c.resolveToken = resolver
 }
 
 func (c *Client) Name() string {
@@ -46,9 +58,9 @@ func (c *Client) Name() string {
 }
 
 func (c *Client) Validate(ctx context.Context) error {
-	key := strings.TrimSpace(os.Getenv(c.cfg.APIKeyEnv))
-	if key == "" {
-		return &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("missing API key in env var %s", c.cfg.APIKeyEnv)}
+	key, err := c.resolveAuthToken(ctx)
+	if err != nil {
+		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.cfg.BaseURL, "/")+"/models", nil)
@@ -97,9 +109,9 @@ func (c *Client) Stream(ctx context.Context, req providers.ChatRequest) (<-chan 
 }
 
 func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, doer requester) (providers.ChatResponse, error) {
-	key := strings.TrimSpace(os.Getenv(c.cfg.APIKeyEnv))
-	if key == "" {
-		return providers.ChatResponse{}, &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("missing API key in env var %s", c.cfg.APIKeyEnv)}
+	key, err := c.resolveAuthToken(ctx)
+	if err != nil {
+		return providers.ChatResponse{}, err
 	}
 
 	model := strings.TrimSpace(req.Model)
@@ -321,5 +333,37 @@ func isRetryable(err error) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func (c *Client) resolveAuthToken(ctx context.Context) (string, error) {
+	mode := strings.ToLower(strings.TrimSpace(c.cfg.AuthMode))
+	if mode == "" {
+		mode = "api_key"
+	}
+
+	switch mode {
+	case "api_key":
+		key := strings.TrimSpace(os.Getenv(c.cfg.APIKeyEnv))
+		if key == "" {
+			return "", &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("missing API key in env var %s", c.cfg.APIKeyEnv)}
+		}
+		return key, nil
+	case "account":
+		if env := strings.TrimSpace(os.Getenv(c.cfg.AccountTokenEnv)); env != "" {
+			return env, nil
+		}
+		if c.resolveToken != nil {
+			token, err := c.resolveToken(ctx)
+			if err != nil {
+				return "", &providers.Error{Code: providers.ErrAuthError, Message: "failed to resolve account token", Cause: err}
+			}
+			if strings.TrimSpace(token) != "" {
+				return strings.TrimSpace(token), nil
+			}
+		}
+		return "", &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("missing account token in env var %s and local auth state", c.cfg.AccountTokenEnv)}
+	default:
+		return "", &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("unsupported auth mode: %s", mode)}
 	}
 }

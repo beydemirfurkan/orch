@@ -42,8 +42,10 @@ func runProviderShow(cmd *cobra.Command, args []string) error {
 	fmt.Println("----------------------")
 	fmt.Printf("default: %s\n", cfg.Provider.Default)
 	fmt.Printf("openai.enabled: %t\n", cfg.Provider.Flags.OpenAIEnabled)
+	fmt.Printf("openai.authMode: %s\n", cfg.Provider.OpenAI.AuthMode)
 	fmt.Printf("openai.baseURL: %s\n", cfg.Provider.OpenAI.BaseURL)
 	fmt.Printf("openai.apiKeyEnv: %s\n", cfg.Provider.OpenAI.APIKeyEnv)
+	fmt.Printf("openai.accountTokenEnv: %s\n", cfg.Provider.OpenAI.AccountTokenEnv)
 	fmt.Printf("openai.models: planner=%s coder=%s reviewer=%s\n",
 		cfg.Provider.OpenAI.Models.Planner,
 		cfg.Provider.OpenAI.Models.Coder,

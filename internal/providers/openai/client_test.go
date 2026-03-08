@@ -84,6 +84,24 @@ func TestMapStatusError(t *testing.T) {
 	}
 }
 
+func TestResolveAuthTokenAccountModeWithResolver(t *testing.T) {
+	client := New(config.OpenAIProviderConfig{
+		AuthMode:        "account",
+		AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
+	})
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		return "account-token", nil
+	})
+
+	token, err := client.resolveAuthToken(context.Background())
+	if err != nil {
+		t.Fatalf("resolve token: %v", err)
+	}
+	if token != "account-token" {
+		t.Fatalf("unexpected token: %s", token)
+	}
+}
+
 func response(status int, body string) *http.Response {
 	return &http.Response{
 		StatusCode: status,
