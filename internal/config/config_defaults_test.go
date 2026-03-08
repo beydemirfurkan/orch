@@ -1,0 +1,82 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadPreservesExplicitFalseSafetyValues(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := EnsureOrchDir(repoRoot); err != nil {
+		t.Fatalf("ensure orch dir: %v", err)
+	}
+
+	raw := `{
+  "version": 1,
+  "models": {"planner":"p","coder":"c","reviewer":"r"},
+  "commands": {"test":"go test ./...","lint":"go vet ./..."},
+  "patch": {"maxFiles":10,"maxLines":800},
+  "safety": {
+    "dryRun": true,
+    "requireDestructiveApproval": false,
+    "lockStaleAfterSeconds": 60,
+    "retry": {"validationMax": 1, "testMax": 1, "reviewMax": 1},
+    "featureFlags": {
+      "permissionMode": false,
+      "repoLock": false,
+      "retryLimits": false,
+      "patchConflictReporting": false
+    }
+  }
+}`
+
+	configPath := filepath.Join(repoRoot, OrchDir, ConfigFile)
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(repoRoot)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if cfg.Safety.RequireDestructiveApproval {
+		t.Fatalf("expected explicit false requireDestructiveApproval to be preserved")
+	}
+	if cfg.Safety.FeatureFlags.PermissionMode || cfg.Safety.FeatureFlags.RepoLock || cfg.Safety.FeatureFlags.RetryLimits || cfg.Safety.FeatureFlags.PatchConflictReporting {
+		t.Fatalf("expected explicit false feature flags to be preserved")
+	}
+}
+
+func TestLoadBackfillsMissingSafetyFields(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := EnsureOrchDir(repoRoot); err != nil {
+		t.Fatalf("ensure orch dir: %v", err)
+	}
+
+	raw := `{
+  "version": 1,
+  "models": {"planner":"p","coder":"c","reviewer":"r"},
+  "commands": {"test":"go test ./...","lint":"go vet ./..."},
+  "patch": {"maxFiles":10,"maxLines":800},
+  "safety": {"dryRun": true}
+}`
+
+	configPath := filepath.Join(repoRoot, OrchDir, ConfigFile)
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(repoRoot)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	if !cfg.Safety.RequireDestructiveApproval {
+		t.Fatalf("expected missing requireDestructiveApproval to be defaulted true")
+	}
+	if !cfg.Safety.FeatureFlags.PermissionMode || !cfg.Safety.FeatureFlags.RepoLock || !cfg.Safety.FeatureFlags.RetryLimits || !cfg.Safety.FeatureFlags.PatchConflictReporting {
+		t.Fatalf("expected missing featureFlags to be defaulted true")
+	}
+}
