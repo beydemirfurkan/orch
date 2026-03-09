@@ -136,6 +136,9 @@ func (m *LockManager) isStale(lock LockFile) bool {
 }
 
 func processAlive(pid int) bool {
+	if pid == os.Getpid() {
+		return true
+	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
 		return false
