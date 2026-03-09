@@ -22,11 +22,13 @@ func TestLoadPreservesExplicitFalseSafetyValues(t *testing.T) {
     "requireDestructiveApproval": false,
     "lockStaleAfterSeconds": 60,
     "retry": {"validationMax": 1, "testMax": 1, "reviewMax": 1},
+    "confidence": {"completeMin": 0.8, "failBelow": 0.4},
     "featureFlags": {
       "permissionMode": false,
       "repoLock": false,
       "retryLimits": false,
-      "patchConflictReporting": false
+      "patchConflictReporting": false,
+      "confidenceEnforcement": false
     }
   }
 }`
@@ -44,8 +46,11 @@ func TestLoadPreservesExplicitFalseSafetyValues(t *testing.T) {
 	if cfg.Safety.RequireDestructiveApproval {
 		t.Fatalf("expected explicit false requireDestructiveApproval to be preserved")
 	}
-	if cfg.Safety.FeatureFlags.PermissionMode || cfg.Safety.FeatureFlags.RepoLock || cfg.Safety.FeatureFlags.RetryLimits || cfg.Safety.FeatureFlags.PatchConflictReporting {
+	if cfg.Safety.FeatureFlags.PermissionMode || cfg.Safety.FeatureFlags.RepoLock || cfg.Safety.FeatureFlags.RetryLimits || cfg.Safety.FeatureFlags.PatchConflictReporting || cfg.Safety.FeatureFlags.ConfidenceEnforcement {
 		t.Fatalf("expected explicit false feature flags to be preserved")
+	}
+	if cfg.Safety.Confidence.CompleteMin != 0.8 || cfg.Safety.Confidence.FailBelow != 0.4 {
+		t.Fatalf("expected explicit confidence policy values to be preserved")
 	}
 }
 
@@ -76,8 +81,11 @@ func TestLoadBackfillsMissingSafetyFields(t *testing.T) {
 	if !cfg.Safety.RequireDestructiveApproval {
 		t.Fatalf("expected missing requireDestructiveApproval to be defaulted true")
 	}
-	if !cfg.Safety.FeatureFlags.PermissionMode || !cfg.Safety.FeatureFlags.RepoLock || !cfg.Safety.FeatureFlags.RetryLimits || !cfg.Safety.FeatureFlags.PatchConflictReporting {
+	if !cfg.Safety.FeatureFlags.PermissionMode || !cfg.Safety.FeatureFlags.RepoLock || !cfg.Safety.FeatureFlags.RetryLimits || !cfg.Safety.FeatureFlags.PatchConflictReporting || !cfg.Safety.FeatureFlags.ConfidenceEnforcement {
 		t.Fatalf("expected missing featureFlags to be defaulted true")
+	}
+	if cfg.Safety.Confidence.CompleteMin <= 0 || cfg.Safety.Confidence.FailBelow <= 0 {
+		t.Fatalf("expected missing confidence policy to be backfilled")
 	}
 
 	if cfg.Provider.Default != "openai" {

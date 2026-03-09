@@ -42,6 +42,7 @@ type Orchestrator struct {
 	testClassifier   *testingengine.Classifier
 	reviewEngine     *reviewengine.Engine
 	confidenceScorer *confidence.Scorer
+	confidencePolicy *confidence.Policy
 	toolRegistry     *tools.Registry
 	repoRoot         string
 	providerReady    bool
@@ -69,6 +70,7 @@ func New(cfg *config.Config, repoRoot string, verbose bool) *Orchestrator {
 		testClassifier:   testingengine.NewClassifier(),
 		reviewEngine:     reviewengine.NewEngine(),
 		confidenceScorer: confidence.New(),
+		confidencePolicy: confidence.NewPolicy(cfg),
 		toolRegistry:     tools.DefaultRegistryWithPolicy(repoRoot, buildPolicy(cfg, tools.ModeRun), nil),
 		repoRoot:         repoRoot,
 		verbose:          verbose,
@@ -476,6 +478,7 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 		return err
 	}
 	o.log.Log("reviewer", "review", "Reviewing changes...")
+	state.ValidationResults = filterOutStage(state.ValidationResults, "review")
 	if o.providerReady {
 		o.log.Log("provider", "reviewer", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Reviewer))
 	}
@@ -508,6 +511,9 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 	}
 	if state.Confidence != nil {
 		o.log.Log("confidence", "score", fmt.Sprintf("score=%.2f band=%s", state.Confidence.Score, state.Confidence.Band))
+	}
+	if err := o.confidencePolicy.Apply(state); err != nil {
+		return fmt.Errorf("confidence policy blocked completion: %w", err)
 	}
 	o.log.Log("reviewer", "review", fmt.Sprintf("Review completed: %s", state.Review.Decision))
 	return nil

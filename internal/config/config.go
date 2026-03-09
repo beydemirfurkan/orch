@@ -40,11 +40,12 @@ type PatchConfig struct {
 }
 
 type SafetyConfig struct {
-	DryRun                     bool               `json:"dryRun"`
-	RequireDestructiveApproval bool               `json:"requireDestructiveApproval"`
-	LockStaleAfterSeconds      int                `json:"lockStaleAfterSeconds"`
-	Retry                      RetryPolicyConfig  `json:"retry"`
-	FeatureFlags               SafetyFeatureFlags `json:"featureFlags"`
+	DryRun                     bool                   `json:"dryRun"`
+	RequireDestructiveApproval bool                   `json:"requireDestructiveApproval"`
+	LockStaleAfterSeconds      int                    `json:"lockStaleAfterSeconds"`
+	Retry                      RetryPolicyConfig      `json:"retry"`
+	Confidence                 ConfidencePolicyConfig `json:"confidence"`
+	FeatureFlags               SafetyFeatureFlags     `json:"featureFlags"`
 }
 
 type RetryPolicyConfig struct {
@@ -53,11 +54,17 @@ type RetryPolicyConfig struct {
 	ReviewMax     int `json:"reviewMax"`
 }
 
+type ConfidencePolicyConfig struct {
+	CompleteMin float64 `json:"completeMin"`
+	FailBelow   float64 `json:"failBelow"`
+}
+
 type SafetyFeatureFlags struct {
 	PermissionMode         bool `json:"permissionMode"`
 	RepoLock               bool `json:"repoLock"`
 	RetryLimits            bool `json:"retryLimits"`
 	PatchConflictReporting bool `json:"patchConflictReporting"`
+	ConfidenceEnforcement  bool `json:"confidenceEnforcement"`
 }
 
 type ProviderConfig struct {
@@ -112,11 +119,16 @@ func DefaultConfig() *Config {
 				TestMax:       2,
 				ReviewMax:     2,
 			},
+			Confidence: ConfidencePolicyConfig{
+				CompleteMin: 0.70,
+				FailBelow:   0.50,
+			},
 			FeatureFlags: SafetyFeatureFlags{
 				PermissionMode:         true,
 				RepoLock:               true,
 				RetryLimits:            true,
 				PatchConflictReporting: true,
+				ConfidenceEnforcement:  true,
 			},
 		},
 		Provider: ProviderConfig{
@@ -177,9 +189,18 @@ func applyDefaults(cfg *Config, rawJSON []byte) {
 	if cfg.Safety.Retry.ReviewMax <= 0 {
 		cfg.Safety.Retry.ReviewMax = defaults.Safety.Retry.ReviewMax
 	}
+	if cfg.Safety.Confidence.CompleteMin <= 0 {
+		cfg.Safety.Confidence.CompleteMin = defaults.Safety.Confidence.CompleteMin
+	}
+	if cfg.Safety.Confidence.FailBelow <= 0 {
+		cfg.Safety.Confidence.FailBelow = defaults.Safety.Confidence.FailBelow
+	}
 
 	if !presence.featureFlagsPresent {
 		cfg.Safety.FeatureFlags = defaults.Safety.FeatureFlags
+	}
+	if !presence.confidenceEnforcementPresent {
+		cfg.Safety.FeatureFlags.ConfidenceEnforcement = defaults.Safety.FeatureFlags.ConfidenceEnforcement
 	}
 
 	if !presence.requireDestructiveApprovalPresent {
@@ -226,11 +247,11 @@ func applyDefaults(cfg *Config, rawJSON []byte) {
 			cfg.Provider.Flags = defaults.Provider.Flags
 		}
 	}
-
 }
 
 type fieldPresence struct {
 	featureFlagsPresent               bool
+	confidenceEnforcementPresent      bool
 	requireDestructiveApprovalPresent bool
 	providerPresent                   bool
 	providerFlagsPresent              bool
@@ -254,7 +275,13 @@ func parsePresence(rawJSON []byte) fieldPresence {
 		return result
 	}
 
-	_, result.featureFlagsPresent = safety["featureFlags"]
+	if featureFlagsRaw, ok := safety["featureFlags"]; ok {
+		result.featureFlagsPresent = true
+		var featureFlags map[string]json.RawMessage
+		if err := json.Unmarshal(featureFlagsRaw, &featureFlags); err == nil {
+			_, result.confidenceEnforcementPresent = featureFlags["confidenceEnforcement"]
+		}
+	}
 	_, result.requireDestructiveApprovalPresent = safety["requireDestructiveApproval"]
 
 	providerRaw, ok := root["provider"]
@@ -267,7 +294,6 @@ func parsePresence(rawJSON []byte) fieldPresence {
 	}
 
 	return result
-
 }
 
 func Save(repoRoot string, cfg *Config) error {
