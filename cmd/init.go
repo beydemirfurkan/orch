@@ -4,6 +4,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/furkanbeydemir/orch/internal/config"
 	"github.com/furkanbeydemir/orch/internal/repo"
@@ -29,7 +30,25 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	fmt.Println("🔍 Analyzing repository...")
+	return performInit(cwd, false)
+}
+
+func AutoInitIfNeeded(cwd string) error {
+	configPath := filepath.Join(cwd, config.OrchDir, config.ConfigFile)
+	if _, err := os.Stat(configPath); err == nil {
+		// Already initialized
+		return nil
+	}
+	
+	// Print a notice since it's happening automatically
+	fmt.Println("✨ First run detected. Initializing Orch automatically...")
+	return performInit(cwd, true)
+}
+
+func performInit(cwd string, quiet bool) error {
+	if !quiet {
+		fmt.Println("🔍 Analyzing repository...")
+	}
 
 	if err := config.EnsureOrchDir(cwd); err != nil {
 		return err
@@ -39,7 +58,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := config.Save(cwd, cfg); err != nil {
 		return err
 	}
-	fmt.Println("✅ .orch/config.json created")
+	if !quiet {
+		fmt.Println("✅ .orch/config.json created")
+	}
 
 	// Repository analysis
 	analyzer := repo.NewAnalyzer(cwd)
@@ -48,9 +69,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("repository analysis failed: %w", err)
 	}
 
-	fmt.Printf("✅ .orch/repo-map.json created (%d files scanned)\n", len(repoMap.Files))
-	fmt.Printf("📋 Language: %s | Package Manager: %s | Test: %s\n",
-		repoMap.Language, repoMap.PackageManager, repoMap.TestFramework)
+	if !quiet {
+		fmt.Printf("✅ .orch/repo-map.json created (%d files scanned)\n", len(repoMap.Files))
+		fmt.Printf("📋 Language: %s | Package Manager: %s | Test: %s\n",
+			repoMap.Language, repoMap.PackageManager, repoMap.TestFramework)
+	}
 
 	store, err := storage.Open(cwd)
 	if err != nil {
@@ -68,8 +91,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve default session: %w", err)
 	}
 
-	fmt.Printf("✅ SQLite storage ready (.orch/orch.db), active session: %s (%s)\n", session.Name, session.ID)
-	fmt.Println("\n🎯 Orch configured successfully!")
+	if !quiet {
+		fmt.Printf("✅ SQLite storage ready (.orch/orch.db), active session: %s (%s)\n", session.Name, session.ID)
+		fmt.Println("\n🎯 Orch configured successfully!")
+	}
 
 	return nil
 }

@@ -32,7 +32,7 @@ func executeRunTask(taskDescription string) (*runExecutionResult, error) {
 
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		return nil, fmt.Errorf("failed to load configuration (run 'orch init' first): %w", err)
+		return nil, fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	sessionCtx, err := loadSessionContext(cwd)

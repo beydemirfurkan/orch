@@ -40,7 +40,7 @@ func runApply(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration (run 'orch init' first): %w", err)
+		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	rawDiff, err := runstore.LoadLatestPatch(cwd)

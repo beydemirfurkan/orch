@@ -31,6 +31,22 @@ Usage examples:
   orch explain                         # Explain latest run
   orch stats                           # Show recent run quality stats`,
 	Version: "0.1.0",
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Do not auto-init if the command is "init" or any help command
+		if cmd.Name() == "init" || cmd.Name() == "help" || cmd.Name() == "version" {
+			return nil
+		}
+		
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+		
+		if err := AutoInitIfNeeded(cwd); err != nil {
+			return fmt.Errorf("auto-initialization failed: %w", err)
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return startInteractiveShell(sessionID)
 	},

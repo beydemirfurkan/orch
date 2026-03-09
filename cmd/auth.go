@@ -59,7 +59,7 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration (run 'orch init' first): %w", err)
+		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(authModeFlag))
@@ -79,13 +79,20 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 	token := strings.TrimSpace(authTokenFlag)
 	if token == "" {
-		fmt.Print("Paste OpenAI account token: ")
-		reader := bufio.NewReader(os.Stdin)
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil {
-			return fmt.Errorf("failed to read token: %w", readErr)
+		fmt.Println("No token provided. Starting automated login...")
+		t, err := auth.RunOAuthFlow()
+		if err != nil {
+			fmt.Printf("\nAutomated login failed: %v\n", err)
+			fmt.Print("Paste OpenAI account token manually: ")
+			reader := bufio.NewReader(os.Stdin)
+			line, readErr := reader.ReadString('\n')
+			if readErr != nil {
+				return fmt.Errorf("failed to read token: %w", readErr)
+			}
+			token = strings.TrimSpace(line)
+		} else {
+			token = t
 		}
-		token = strings.TrimSpace(line)
 	}
 	if token == "" {
 		return fmt.Errorf("account token cannot be empty")
@@ -119,7 +126,7 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		return fmt.Errorf("failed to load configuration (run 'orch init' first): %w", err)
+		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
 	state, err := auth.Load(cwd)

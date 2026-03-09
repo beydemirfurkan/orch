@@ -15,6 +15,8 @@ Son güncelleme kapsamı:
 - test failure classifier v0
 - explain command v1
 - stats command v1
+- pi-inspired frontend architecture
+- interactive shell input/ux refresh v0
 
 ---
 
