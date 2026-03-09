@@ -41,7 +41,7 @@ func (c *Coder) Execute(input *Input) (*Output, error) {
 	if c.runtime != nil {
 		response, err := c.runtime.Chat(context.Background(), providers.ChatRequest{
 			Role:         providers.RoleCoder,
-			SystemPrompt: "You are a coding agent. Return a unified diff patch when possible.",
+			SystemPrompt: "You are a constrained coding agent. Return a unified diff patch only, keep scope minimal, and obey the execution contract.",
 			UserPrompt:   buildCoderPrompt(input),
 		})
 		if err != nil {
@@ -68,7 +68,90 @@ func buildCoderPrompt(input *Input) string {
 	if input == nil || input.Task == nil || input.Plan == nil {
 		return ""
 	}
-	return fmt.Sprintf("Task: %s\nPlan steps: %d\nReturn unified diff patch.", input.Task.Description, len(input.Plan.Steps))
+
+	var b strings.Builder
+	b.WriteString("Task: ")
+	b.WriteString(input.Task.Description)
+	if input.TaskBrief != nil {
+		b.WriteString("\nNormalized Goal: ")
+		b.WriteString(input.TaskBrief.NormalizedGoal)
+		if input.TaskBrief.TaskType != "" {
+			b.WriteString("\nTask Type: ")
+			b.WriteString(string(input.TaskBrief.TaskType))
+		}
+		if input.TaskBrief.RiskLevel != "" {
+			b.WriteString("\nRisk Level: ")
+			b.WriteString(string(input.TaskBrief.RiskLevel))
+		}
+	}
+	if input.Plan != nil {
+		if input.Plan.Summary != "" {
+			b.WriteString("\nPlan Summary: ")
+			b.WriteString(input.Plan.Summary)
+		}
+		if len(input.Plan.AcceptanceCriteria) > 0 {
+			criteria := make([]string, 0, len(input.Plan.AcceptanceCriteria))
+			for _, criterion := range input.Plan.AcceptanceCriteria {
+				criteria = append(criteria, criterion.Description)
+			}
+			b.WriteString("\nAcceptance Criteria: ")
+			b.WriteString(strings.Join(criteria, " | "))
+		}
+	}
+	if input.ExecutionContract != nil {
+		if len(input.ExecutionContract.AllowedFiles) > 0 {
+			b.WriteString("\nAllowed Files: ")
+			b.WriteString(strings.Join(input.ExecutionContract.AllowedFiles, ", "))
+		}
+		if len(input.ExecutionContract.InspectFiles) > 0 {
+			b.WriteString("\nInspect Files: ")
+			b.WriteString(strings.Join(input.ExecutionContract.InspectFiles, ", "))
+		}
+		if len(input.ExecutionContract.RequiredEdits) > 0 {
+			b.WriteString("\nRequired Edits: ")
+			b.WriteString(strings.Join(input.ExecutionContract.RequiredEdits, " | "))
+		}
+		if len(input.ExecutionContract.ProhibitedActions) > 0 {
+			b.WriteString("\nProhibited Actions: ")
+			b.WriteString(strings.Join(input.ExecutionContract.ProhibitedActions, " | "))
+		}
+		if input.ExecutionContract.PatchBudget.MaxFiles > 0 || input.ExecutionContract.PatchBudget.MaxChangedLines > 0 {
+			b.WriteString(fmt.Sprintf("\nPatch Budget: max_files=%d max_changed_lines=%d", input.ExecutionContract.PatchBudget.MaxFiles, input.ExecutionContract.PatchBudget.MaxChangedLines))
+		}
+	}
+	if input.Context != nil {
+		if len(input.Context.RelatedTests) > 0 {
+			b.WriteString("\nRelated Tests: ")
+			b.WriteString(strings.Join(input.Context.RelatedTests, ", "))
+		}
+	}
+	if input.RetryDirective != nil {
+		b.WriteString("\nRetry Stage: ")
+		b.WriteString(input.RetryDirective.Stage)
+		b.WriteString(fmt.Sprintf("\nRetry Attempt: %d", input.RetryDirective.Attempt))
+		if len(input.RetryDirective.Reasons) > 0 {
+			b.WriteString("\nRetry Reasons: ")
+			b.WriteString(strings.Join(input.RetryDirective.Reasons, " | "))
+		}
+		if len(input.RetryDirective.FailedGates) > 0 {
+			b.WriteString("\nFailed Gates: ")
+			b.WriteString(strings.Join(input.RetryDirective.FailedGates, ", "))
+		}
+		if len(input.RetryDirective.FailedTests) > 0 {
+			b.WriteString("\nFailed Tests: ")
+			b.WriteString(strings.Join(input.RetryDirective.FailedTests, " | "))
+		}
+		if len(input.RetryDirective.Instructions) > 0 {
+			b.WriteString("\nRetry Instructions: ")
+			b.WriteString(strings.Join(input.RetryDirective.Instructions, " | "))
+		}
+		if len(input.RetryDirective.Avoid) > 0 {
+			b.WriteString("\nAvoid: ")
+			b.WriteString(strings.Join(input.RetryDirective.Avoid, " | "))
+		}
+	}
+	b.WriteString("\nReturn unified diff patch only.")
+	return b.String()
 }
 
 func extractUnifiedDiff(text string) string {

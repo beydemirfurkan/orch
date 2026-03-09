@@ -10,29 +10,41 @@ import (
 
 	"github.com/furkanbeydemir/orch/internal/agents"
 	"github.com/furkanbeydemir/orch/internal/auth"
+	"github.com/furkanbeydemir/orch/internal/confidence"
 	"github.com/furkanbeydemir/orch/internal/config"
+	"github.com/furkanbeydemir/orch/internal/execution"
 	"github.com/furkanbeydemir/orch/internal/logger"
 	"github.com/furkanbeydemir/orch/internal/models"
 	"github.com/furkanbeydemir/orch/internal/patch"
+	"github.com/furkanbeydemir/orch/internal/planning"
 	"github.com/furkanbeydemir/orch/internal/providers"
 	"github.com/furkanbeydemir/orch/internal/providers/openai"
 	"github.com/furkanbeydemir/orch/internal/repo"
+	reviewengine "github.com/furkanbeydemir/orch/internal/review"
+	testingengine "github.com/furkanbeydemir/orch/internal/testing"
 	"github.com/furkanbeydemir/orch/internal/tools"
 )
 
 type Orchestrator struct {
 	cfg *config.Config
 	// log, execution trace logger.
-	log            *logger.Logger
-	analyzer       *repo.Analyzer
-	contextBuilder *repo.ContextBuilder
-	planner        agents.Agent
-	coder          agents.Agent
-	reviewer       agents.Agent
-	patchPipeline  *patch.Pipeline
-	toolRegistry   *tools.Registry
-	repoRoot       string
-	providerReady  bool
+	log              *logger.Logger
+	analyzer         *repo.Analyzer
+	contextBuilder   *repo.ContextBuilder
+	planner          agents.Agent
+	coder            agents.Agent
+	reviewer         agents.Agent
+	patchPipeline    *patch.Pipeline
+	contractBuilder  *execution.ContractBuilder
+	scopeGuard       *execution.ScopeGuard
+	planGuard        *execution.PlanComplianceGuard
+	retryBuilder     *execution.RetryDirectiveBuilder
+	testClassifier   *testingengine.Classifier
+	reviewEngine     *reviewengine.Engine
+	confidenceScorer *confidence.Scorer
+	toolRegistry     *tools.Registry
+	repoRoot         string
+	providerReady    bool
 	// verbose controls detailed log output.
 	verbose bool
 }
@@ -42,17 +54,24 @@ func New(cfg *config.Config, repoRoot string, verbose bool) *Orchestrator {
 	log := logger.New(runID, repoRoot, verbose)
 
 	orch := &Orchestrator{
-		cfg:            cfg,
-		log:            log,
-		analyzer:       repo.NewAnalyzer(repoRoot),
-		contextBuilder: repo.NewContextBuilder(repoRoot),
-		planner:        agents.NewPlanner(cfg.Models.Planner),
-		coder:          agents.NewCoder(cfg.Models.Coder),
-		reviewer:       agents.NewReviewer(cfg.Models.Reviewer),
-		patchPipeline:  patch.NewPipeline(cfg.Patch.MaxFiles, cfg.Patch.MaxLines),
-		toolRegistry:   tools.DefaultRegistryWithPolicy(repoRoot, buildPolicy(cfg, tools.ModeRun), nil),
-		repoRoot:       repoRoot,
-		verbose:        verbose,
+		cfg:              cfg,
+		log:              log,
+		analyzer:         repo.NewAnalyzer(repoRoot),
+		contextBuilder:   repo.NewContextBuilder(repoRoot),
+		planner:          agents.NewPlanner(cfg.Models.Planner),
+		coder:            agents.NewCoder(cfg.Models.Coder),
+		reviewer:         agents.NewReviewer(cfg.Models.Reviewer),
+		patchPipeline:    patch.NewPipeline(cfg.Patch.MaxFiles, cfg.Patch.MaxLines),
+		contractBuilder:  execution.NewContractBuilder(cfg),
+		scopeGuard:       execution.NewScopeGuard(),
+		planGuard:        execution.NewPlanComplianceGuard(),
+		retryBuilder:     execution.NewRetryDirectiveBuilder(),
+		testClassifier:   testingengine.NewClassifier(),
+		reviewEngine:     reviewengine.NewEngine(),
+		confidenceScorer: confidence.New(),
+		toolRegistry:     tools.DefaultRegistryWithPolicy(repoRoot, buildPolicy(cfg, tools.ModeRun), nil),
+		repoRoot:         repoRoot,
+		verbose:          verbose,
 	}
 
 	orch.attachProviderRuntime()
@@ -165,29 +184,39 @@ func (o *Orchestrator) Run(task *models.Task) (*models.RunState, error) {
 }
 
 func (o *Orchestrator) Plan(task *models.Task) (*models.Plan, error) {
+	_, plan, err := o.PlanDetailed(task)
+	return plan, err
+}
+
+func (o *Orchestrator) PlanDetailed(task *models.Task) (*models.TaskBrief, *models.Plan, error) {
 	o.log.Log("policy", "mode", "policy decision mode=plan read_only=true")
 	o.toolRegistry = tools.DefaultRegistryWithPolicy(o.repoRoot, buildPolicy(o.cfg, tools.ModePlan), func(message string) {
 		o.log.Log("policy", "decision", message)
 	})
 	o.log.Log("orchestrator", "plan-only", fmt.Sprintf("Generating plan: %s", task.Description))
 
-	// Repository analysis
 	repoMap, err := o.analyzer.Analyze()
 	if err != nil {
-		return nil, fmt.Errorf("repository analysis failed: %w", err)
+		return nil, nil, fmt.Errorf("repository analysis failed: %w", err)
 	}
 
+	taskBrief, compiledPlan := o.compilePlanArtifacts(task, repoMap)
 	input := &agents.Input{
-		Task:    task,
-		RepoMap: repoMap,
+		Task:      task,
+		TaskBrief: taskBrief,
+		RepoMap:   repoMap,
+		Plan:      compiledPlan,
 	}
 
 	output, err := o.planner.Execute(input)
 	if err != nil {
-		return nil, fmt.Errorf("planning failed: %w", err)
+		return nil, nil, fmt.Errorf("planning failed: %w", err)
+	}
+	if output == nil || output.Plan == nil {
+		return taskBrief, compiledPlan, nil
 	}
 
-	return output.Plan, nil
+	return taskBrief, output.Plan, nil
 }
 
 func (o *Orchestrator) stepAnalyze(state *models.RunState) error {
@@ -214,8 +243,17 @@ func (o *Orchestrator) stepPlan(state *models.RunState) error {
 		o.log.Log("provider", "planner", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Planner))
 	}
 
+	repoMap, err := o.analyzer.Analyze()
+	if err != nil {
+		return fmt.Errorf("context repository analysis failed: %w", err)
+	}
+
+	taskBrief, compiledPlan := o.compilePlanArtifacts(&state.Task, repoMap)
 	input := &agents.Input{
-		Task: &state.Task,
+		Task:      &state.Task,
+		TaskBrief: taskBrief,
+		RepoMap:   repoMap,
+		Plan:      compiledPlan,
 	}
 
 	output, err := o.planner.Execute(input)
@@ -223,11 +261,10 @@ func (o *Orchestrator) stepPlan(state *models.RunState) error {
 		return fmt.Errorf("planning failed: %w", err)
 	}
 
-	state.Plan = output.Plan
-
-	repoMap, err := o.analyzer.Analyze()
-	if err != nil {
-		return fmt.Errorf("context repository analysis failed: %w", err)
+	state.TaskBrief = taskBrief
+	state.Plan = compiledPlan
+	if output != nil && output.Plan != nil {
+		state.Plan = output.Plan
 	}
 	state.Context = o.contextBuilder.Build(&state.Task, repoMap, state.Plan)
 	o.log.Log("context", "build", fmt.Sprintf("Context built: selected=%d tests=%d configs=%d", len(state.Context.SelectedFiles), len(state.Context.RelatedTests), len(state.Context.RelevantConfigs)))
@@ -245,10 +282,18 @@ func (o *Orchestrator) stepCode(state *models.RunState) error {
 		o.log.Log("provider", "coder", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Coder))
 	}
 
+	state.ExecutionContract = o.contractBuilder.Build(&state.Task, state.TaskBrief, state.Plan, state.Context)
+	if state.ExecutionContract != nil {
+		o.log.Log("execution", "contract", fmt.Sprintf("allowed_files=%d inspect_files=%d required_edits=%d", len(state.ExecutionContract.AllowedFiles), len(state.ExecutionContract.InspectFiles), len(state.ExecutionContract.RequiredEdits)))
+	}
+
 	input := &agents.Input{
-		Task:    &state.Task,
-		Plan:    state.Plan,
-		Context: state.Context,
+		Task:              &state.Task,
+		TaskBrief:         state.TaskBrief,
+		Plan:              state.Plan,
+		ExecutionContract: state.ExecutionContract,
+		Context:           state.Context,
+		RetryDirective:    state.RetryDirective,
 	}
 
 	output, err := o.coder.Execute(input)
@@ -257,6 +302,22 @@ func (o *Orchestrator) stepCode(state *models.RunState) error {
 	}
 
 	state.Patch = output.Patch
+	if state.Patch != nil && strings.TrimSpace(state.Patch.RawDiff) != "" {
+		parsedPatch, parseErr := patch.NewParser().Parse(state.Patch.RawDiff)
+		if parseErr != nil {
+			state.ValidationResults = append(state.ValidationResults, models.ValidationResult{
+				Name:     "patch_parse_valid",
+				Stage:    "validation",
+				Status:   models.ValidationFail,
+				Severity: models.SeverityHigh,
+				Summary:  parseErr.Error(),
+			})
+			return fmt.Errorf("code generation produced an invalid patch: %w", parseErr)
+		}
+		parsedPatch.TaskID = state.Task.ID
+		state.Patch = parsedPatch
+	}
+	state.RetryDirective = nil
 	o.log.Log("coder", "code", "Code changes generated")
 	return nil
 }
@@ -266,19 +327,62 @@ func (o *Orchestrator) stepValidate(state *models.RunState) error {
 		return err
 	}
 	o.log.Log("validator", "validate", "Validating patch...")
+	state.ValidationResults = []models.ValidationResult{}
 
 	if state.Patch == nil {
-		return fmt.Errorf("no patch found to validate")
+		result := models.ValidationResult{
+			Name:     "patch_present",
+			Stage:    "validation",
+			Status:   models.ValidationFail,
+			Severity: models.SeverityHigh,
+			Summary:  "no patch found to validate",
+		}
+		state.ValidationResults = append(state.ValidationResults, result)
+		return fmt.Errorf("%s", result.Summary)
 	}
 
+	state.ValidationResults = append(state.ValidationResults, models.ValidationResult{
+		Name:     "patch_parse_valid",
+		Stage:    "validation",
+		Status:   models.ValidationPass,
+		Severity: models.SeverityLow,
+		Summary:  "patch parsed successfully",
+	})
+
 	if err := o.patchPipeline.Validate(state.Patch); err != nil {
+		state.ValidationResults = append(state.ValidationResults, models.ValidationResult{
+			Name:     "patch_hygiene",
+			Stage:    "validation",
+			Status:   models.ValidationFail,
+			Severity: models.SeverityHigh,
+			Summary:  err.Error(),
+		})
 		if o.cfg.Safety.FeatureFlags.PatchConflictReporting {
 			return fmt.Errorf("patch validation failed (impacted files: %s): %w", strings.Join(patchFilePaths(state.Patch), ", "), err)
 		}
 		return fmt.Errorf("patch validation failed: %w", err)
 	}
+	state.ValidationResults = append(state.ValidationResults, models.ValidationResult{
+		Name:     "patch_hygiene",
+		Stage:    "validation",
+		Status:   models.ValidationPass,
+		Severity: models.SeverityLow,
+		Summary:  "patch passed patch hygiene validation",
+	})
 
-	o.log.Log("validator", "validate", "Patch validated")
+	scopeResult := o.scopeGuard.Validate(state.ExecutionContract, state.Patch)
+	state.ValidationResults = append(state.ValidationResults, scopeResult)
+	if scopeResult.Status == models.ValidationFail {
+		return fmt.Errorf("%s", scopeResult.Summary)
+	}
+
+	planResult := o.planGuard.Validate(state.Plan, state.ExecutionContract, state.Patch)
+	state.ValidationResults = append(state.ValidationResults, planResult)
+	if planResult.Status == models.ValidationFail {
+		return fmt.Errorf("%s", planResult.Summary)
+	}
+
+	o.log.Log("validator", "validate", fmt.Sprintf("Patch validated with %d gate results", len(state.ValidationResults)))
 	return nil
 }
 
@@ -287,15 +391,48 @@ func (o *Orchestrator) stepTest(state *models.RunState) error {
 		return err
 	}
 	o.log.Log("test", "test", "Running tests...")
+	state.TestFailures = nil
+	state.ValidationResults = filterOutStage(state.ValidationResults, "test")
 
 	result, err := o.toolRegistry.Execute("run_tests", map[string]string{"command": o.cfg.Commands.Test})
 	if err != nil {
+		state.ValidationResults = append(state.ValidationResults,
+			models.ValidationResult{
+				Name:     "required_tests_executed",
+				Stage:    "test",
+				Status:   models.ValidationFail,
+				Severity: models.SeverityHigh,
+				Summary:  "failed to start test command",
+			},
+		)
+		state.TestFailures = o.testClassifier.Classify("", err.Error())
+		state.TestResults = strings.TrimSpace(err.Error())
 		return fmt.Errorf("failed to start test command: %w", err)
 	}
 
 	if result == nil {
+		state.ValidationResults = append(state.ValidationResults,
+			models.ValidationResult{
+				Name:     "required_tests_executed",
+				Stage:    "test",
+				Status:   models.ValidationFail,
+				Severity: models.SeverityHigh,
+				Summary:  "test result was not returned",
+			},
+		)
+		state.TestFailures = o.testClassifier.Classify("", "test result was not returned")
 		return fmt.Errorf("test result was not returned")
 	}
+
+	state.ValidationResults = append(state.ValidationResults,
+		models.ValidationResult{
+			Name:     "required_tests_executed",
+			Stage:    "test",
+			Status:   models.ValidationPass,
+			Severity: models.SeverityLow,
+			Summary:  "required tests were executed",
+		},
+	)
 
 	state.TestResults = strings.TrimSpace(result.Output)
 	if !result.Success {
@@ -303,9 +440,33 @@ func (o *Orchestrator) stepTest(state *models.RunState) error {
 		if state.TestResults == "" {
 			state.TestResults = strings.TrimSpace(result.Error)
 		}
+		state.TestFailures = o.testClassifier.Classify(result.Output, result.Error)
+		summaries := make([]string, 0, len(state.TestFailures))
+		for _, failure := range state.TestFailures {
+			summaries = append(summaries, failure.Code+": "+failure.Summary)
+		}
+		state.ValidationResults = append(state.ValidationResults,
+			models.ValidationResult{
+				Name:     "required_tests_passed",
+				Stage:    "test",
+				Status:   models.ValidationFail,
+				Severity: models.SeverityHigh,
+				Summary:  strings.Join(summaries, " | "),
+			},
+		)
 		return fmt.Errorf("tests failed: %s", strings.TrimSpace(result.Error))
 	}
 
+	state.ValidationResults = append(state.ValidationResults,
+		models.ValidationResult{
+			Name:     "required_tests_passed",
+			Stage:    "test",
+			Status:   models.ValidationPass,
+			Severity: models.SeverityLow,
+			Summary:  "required tests passed",
+		},
+	)
+	state.TestFailures = nil
 	o.log.Log("test", "test", "Tests completed")
 	return nil
 }
@@ -320,10 +481,13 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 	}
 
 	input := &agents.Input{
-		Task:        &state.Task,
-		Plan:        state.Plan,
-		Patch:       state.Patch,
-		TestResults: state.TestResults,
+		Task:              &state.Task,
+		TaskBrief:         state.TaskBrief,
+		Plan:              state.Plan,
+		ExecutionContract: state.ExecutionContract,
+		Patch:             state.Patch,
+		ValidationResults: state.ValidationResults,
+		TestResults:       state.TestResults,
 	}
 
 	output, err := o.reviewer.Execute(input)
@@ -331,8 +495,21 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 		return fmt.Errorf("review failed: %w", err)
 	}
 
-	state.Review = output.Review
-	o.log.Log("reviewer", "review", fmt.Sprintf("Review completed: %s", output.Review.Decision))
+	var providerReview *models.ReviewResult
+	if output != nil {
+		providerReview = output.Review
+	}
+	scorecard, finalReview := o.reviewEngine.Evaluate(state, providerReview)
+	state.ReviewScorecard = scorecard
+	state.Review = finalReview
+	state.Confidence = o.confidenceScorer.Score(state)
+	if state.Review == nil {
+		return fmt.Errorf("review engine did not produce a review result")
+	}
+	if state.Confidence != nil {
+		o.log.Log("confidence", "score", fmt.Sprintf("score=%.2f band=%s", state.Confidence.Score, state.Confidence.Band))
+	}
+	o.log.Log("reviewer", "review", fmt.Sprintf("Review completed: %s", state.Review.Decision))
 	return nil
 }
 
@@ -354,6 +531,10 @@ func (o *Orchestrator) stepValidateWithRetries(state *models.RunState) error {
 		}
 
 		state.Retries.Validation++
+		state.RetryDirective = o.retryBuilder.FromValidation(state, state.Retries.Validation)
+		if state.RetryDirective != nil {
+			o.log.Log("orchestrator", "retry_contract", fmt.Sprintf("stage=%s attempt=%d failed_gates=%s", state.RetryDirective.Stage, state.RetryDirective.Attempt, strings.Join(state.RetryDirective.FailedGates, ",")))
+		}
 		o.log.Log("orchestrator", "retry", fmt.Sprintf("Validation failed, retrying code generation (%d/%d)", state.Retries.Validation, maxRetries))
 		if codeErr := o.stepCode(state); codeErr != nil {
 			o.addUnresolvedFailure(state, "coding-after-validation", codeErr)
@@ -380,6 +561,10 @@ func (o *Orchestrator) stepTestWithRetries(state *models.RunState) error {
 		}
 
 		state.Retries.Testing++
+		state.RetryDirective = o.retryBuilder.FromTest(state, state.Retries.Testing)
+		if state.RetryDirective != nil {
+			o.log.Log("orchestrator", "retry_contract", fmt.Sprintf("stage=%s attempt=%d failed_tests=%d", state.RetryDirective.Stage, state.RetryDirective.Attempt, len(state.RetryDirective.FailedTests)))
+		}
 		o.log.Log("orchestrator", "retry", fmt.Sprintf("Tests failed, retrying code generation (%d/%d)", state.Retries.Testing, maxRetries))
 		if codeErr := o.stepCode(state); codeErr != nil {
 			o.addUnresolvedFailure(state, "coding-after-test", codeErr)
@@ -416,6 +601,10 @@ func (o *Orchestrator) stepReviewWithRetries(state *models.RunState) error {
 		}
 
 		state.Retries.Review++
+		state.RetryDirective = o.retryBuilder.FromReview(state, state.Retries.Review)
+		if state.RetryDirective != nil {
+			o.log.Log("orchestrator", "retry_contract", fmt.Sprintf("stage=%s attempt=%d reasons=%d", state.RetryDirective.Stage, state.RetryDirective.Attempt, len(state.RetryDirective.Reasons)))
+		}
 		o.log.Log("orchestrator", "retry", fmt.Sprintf("Review requested revise, retrying code generation (%d/%d)", state.Retries.Review, maxRetries))
 
 		if codeErr := o.stepCode(state); codeErr != nil {
@@ -436,6 +625,23 @@ func (o *Orchestrator) addUnresolvedFailure(state *models.RunState, stage string
 	state.UnresolvedFailures = append(state.UnresolvedFailures, failure)
 	state.BestPatchSummary = patch.Summarize(state.Patch)
 	o.log.Log("orchestrator", "unresolved", failure)
+}
+
+func filterOutStage(results []models.ValidationResult, stage string) []models.ValidationResult {
+	filtered := make([]models.ValidationResult, 0, len(results))
+	for _, result := range results {
+		if strings.EqualFold(strings.TrimSpace(result.Stage), strings.TrimSpace(stage)) {
+			continue
+		}
+		filtered = append(filtered, result)
+	}
+	return filtered
+}
+
+func (o *Orchestrator) compilePlanArtifacts(task *models.Task, repoMap *models.RepoMap) (*models.TaskBrief, *models.Plan) {
+	taskBrief := planning.NormalizeTask(task)
+	compiledPlan := planning.CompilePlan(task, taskBrief, repoMap)
+	return taskBrief, compiledPlan
 }
 
 func buildPolicy(cfg *config.Config, mode string) tools.Policy {

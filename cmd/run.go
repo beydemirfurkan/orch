@@ -75,6 +75,12 @@ func runRun(cmd *cobra.Command, args []string) error {
 			fmt.Printf("   💬 %s\n", comment)
 		}
 	}
+	if state.Confidence != nil {
+		fmt.Printf("\n🎯 Confidence: %.2f (%s)\n", state.Confidence.Score, state.Confidence.Band)
+		for _, warning := range state.Confidence.Warnings {
+			fmt.Printf("   ⚠ %s\n", warning)
+		}
+	}
 
 	if state.Patch != nil && state.Patch.RawDiff != "" {
 		fmt.Println("\n💡 To view the patch: orch diff")
@@ -109,6 +115,9 @@ func printRunResultSummary(state *models.RunState) {
 	fmt.Printf("Run ID: %s\n", state.ID)
 	fmt.Printf("Status: %s\n", state.Status)
 	fmt.Printf("Retries: validation=%d test=%d review=%d\n", state.Retries.Validation, state.Retries.Testing, state.Retries.Review)
+	if state.Confidence != nil {
+		fmt.Printf("Confidence: %.2f (%s)\n", state.Confidence.Score, state.Confidence.Band)
+	}
 	fmt.Printf("Log file: .orch/runs/%s.json\n", state.ID)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 }

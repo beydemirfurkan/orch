@@ -67,7 +67,37 @@ func buildReviewerPrompt(input *Input) string {
 	if input == nil || input.Task == nil {
 		return ""
 	}
-	return fmt.Sprintf("Task: %s\nPatch length: %d chars\nTest results: %s", input.Task.Description, len(input.Patch.RawDiff), input.TestResults)
+
+	var b strings.Builder
+	b.WriteString("Task: ")
+	b.WriteString(input.Task.Description)
+	b.WriteString(fmt.Sprintf("\nPatch length: %d chars", len(input.Patch.RawDiff)))
+	if input.TaskBrief != nil {
+		b.WriteString("\nTask Type: ")
+		b.WriteString(string(input.TaskBrief.TaskType))
+		b.WriteString("\nRisk Level: ")
+		b.WriteString(string(input.TaskBrief.RiskLevel))
+	}
+	if input.Plan != nil && len(input.Plan.AcceptanceCriteria) > 0 {
+		criteria := make([]string, 0, len(input.Plan.AcceptanceCriteria))
+		for _, criterion := range input.Plan.AcceptanceCriteria {
+			criteria = append(criteria, criterion.Description)
+		}
+		b.WriteString("\nAcceptance Criteria: ")
+		b.WriteString(strings.Join(criteria, " | "))
+	}
+	if len(input.ValidationResults) > 0 {
+		parts := make([]string, 0, len(input.ValidationResults))
+		for _, result := range input.ValidationResults {
+			parts = append(parts, fmt.Sprintf("%s=%s", result.Name, result.Status))
+		}
+		b.WriteString("\nValidation Gates: ")
+		b.WriteString(strings.Join(parts, ", "))
+	}
+	b.WriteString("\nTest results: ")
+	b.WriteString(input.TestResults)
+	b.WriteString("\nDecide accept or revise and give concise findings.")
+	return b.String()
 }
 
 func parseReviewResponse(text string) *models.ReviewResult {
