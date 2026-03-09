@@ -1,257 +1,410 @@
 # Orch Sprint Board (90-Day Execution Plan)
 
-This document converts the roadmap into an implementation-ready sprint backlog.
+This sprint board aligns the next 90 days with the systematic coding vision:
+
+> Orch should not behave like another free-form coding agent.
+> Orch should become the control plane that makes coding models disciplined, testable, reviewable, and reliable.
+
+Related docs:
+- `docs/SYSTEMATIC_CODING_ROADMAP.md`
+- `docs/IMPLEMENTATION_TASK_LIST.md`
+- `docs/QUALITY_SYSTEM_SPEC.md`
+- `docs/EXECUTION_CONTRACT_SPEC.md`
+- `docs/PLANNING_ENGINE_SPEC.md`
+
+---
 
 ## Plan Summary
 
-- Duration: 90 days (6 phases)
-- Priority: safety and determinism > quality > integrations > UX polish
-- Target outcome: increase task completion rate from 40% to 65%+
+- Duration: 90 days
+- Goal: make Orch own planning, validation, testing, review, and confidence
+- Strategy: contracts first -> planning ownership -> constrained coding -> quality gates -> review/confidence -> benchmarks
+- Target outcome:
+  - lower model variance
+  - lower scope drift
+  - higher first-pass validation/test success
+  - more explainable run artifacts
 
-## Phase 1 - Safety and Deterministic Foundations (Weeks 1-2)
+---
 
-### P1.1 Permission mode and destructive-action gate
-- Owner: Core CLI
+## Phase 1 - Contracts and Planning Foundation (Weeks 1-2)
+
+### P1.1 Contract model foundation
+- Owner: Core Runtime
 - Estimate: 4 days
 - Dependencies: None
 - Scope:
-  - read-only behavior for `plan` mode
-  - policy checks for file writes, patch apply, and shell execution
-  - explicit approval requirement for destructive actions
+  - task brief model
+  - structured plan model
+  - execution contract model
+  - validation result model
+  - review scorecard placeholders in run state
 - Acceptance Criteria:
-  - write/apply actions are blocked in read-only mode
-  - error messages are short and actionable
-  - policy decisions are recorded in execution logs
+  - typed models exist and serialize cleanly
+  - run state can persist new contract data
+  - contract tests cover JSON roundtrips
 
-### P1.2 Retry policy completion (test/validation/review)
-- Owner: Orchestrator
-- Estimate: 4 days
-- Dependencies: P1.1 (partial)
+### P1.2 Task normalizer
+- Owner: Planning
+- Estimate: 3 days
+- Dependencies: P1.1
 - Scope:
-  - max 2 auto-fix retries for validation and test failures
-  - max 2 retries for reviewer `revise`
-  - best-patch summary after retry exhaustion
+  - task type classification
+  - normalized goal generation
+  - risk level derivation
+  - assumptions/constraints scaffolding
 - Acceptance Criteria:
-  - no infinite loops
-  - retry counters are visible in run state
-  - terminal output includes unresolved failure summary
+  - same task input produces stable normalized brief
+  - ambiguous tasks are marked explicitly
 
-### P1.3 LLM resiliency
-- Owner: Agents Infra
+### P1.3 `orch plan --json`
+- Owner: CLI
 - Estimate: 2 days
+- Dependencies: P1.1
+- Scope:
+  - JSON output mode for structured planning
+  - optional explainability metadata in output
+- Acceptance Criteria:
+  - machine-readable plan output is stable
+  - output works without provider runtime
+
+### P1.4 Acceptance criteria generator v0
+- Owner: Planning
+- Estimate: 1 day
 - Dependencies: P1.2
 - Scope:
-  - exponential backoff for timeout/rate-limit/model-access errors (max 3)
-  - error categorization in logs
+  - acceptance criteria templates per task type
+  - test requirement seed generation
 - Acceptance Criteria:
-  - transient failures do not fail immediately
-  - deterministic fail behavior after final attempt
+  - every generated code task has acceptance criteria
+  - every generated code task has test requirements
 
-### P1.4 Repository lock (`.orch/lock`)
-- Owner: Runtime
-- Estimate: 2 days
-- Dependencies: None
-- Scope:
-  - lock acquire at run start
-  - lock release on success/failure/panic
-  - stale lock detection and cleanup flow
-- Acceptance Criteria:
-  - parallel `orch run` calls are blocked per repo
-  - stale locks can be recovered safely
+---
 
-## Phase 2 - Tooling Engine Hardening (Weeks 3-4)
+## Phase 2 - Orch-Owned Planning Engine (Weeks 3-4)
 
-### P2.1 Tool contract standardization
-- Owner: Tools
-- Estimate: 3 days
+### P2.1 Deterministic file targeting
+- Owner: Planning + Repo
+- Estimate: 4 days
 - Dependencies: Phase 1
 - Scope:
-  - unified request/response schema for `read/glob/grep/edit/write/bash/apply_patch`
-  - consistent error codes and message shape
+  - repo-aware candidate file ranking
+  - inspect/modify/test/config intent tagging
 - Acceptance Criteria:
-  - all tools return a shared contract format
-  - logs show uniform call structure
+  - plan includes ranked file lists with reasons
+  - targeting is benchmarkable and repeatable
 
-### P2.2 Safe shell policy
-- Owner: Tools + Security
-- Estimate: 3 days
-- Dependencies: P2.1
-- Scope:
-  - timeout, output truncation, and command classification
-  - policy barriers for high-risk commands
-- Acceptance Criteria:
-  - oversized command output is redirected to file automatically
-  - timeout does not deadlock runs
-
-### P2.3 Patch pipeline hardening
-- Owner: Patch Engine
+### P2.2 Structured plan compiler
+- Owner: Planning
 - Estimate: 4 days
 - Dependencies: P2.1
 - Scope:
-  - parser robustness improvements
-  - conflict detection and reporting
-  - best-patch fallback behavior
+  - compile final plan from normalized brief + heuristics
+  - steps, risks, invariants, forbidden changes, tests
 - Acceptance Criteria:
-  - conflicts stop apply and list impacted files
-  - invalid diffs fail with explicit reason
+  - final plan shape is Orch-owned
+  - plan remains valid without model refinement
 
-## Phase 3 - Session, Project, and Worktree (Weeks 5-7)
-
-### P3.1 Project/session data model
-- Owner: Storage + Orchestrator
-- Estimate: 5 days
-- Dependencies: Phase 2
-- Scope:
-  - project/session/run entity model
-  - evolution from run-only to session-aware persistence
-- Acceptance Criteria:
-  - multiple sessions can exist under one project
-  - session history is queryable
-
-### P3.2 Session lifecycle commands
-- Owner: CLI
-- Estimate: 4 days
-- Dependencies: P3.1
-- Scope:
-  - session list/create/select/close commands
-  - `run` flow becomes session-aware
-- Acceptance Criteria:
-  - CLI runs in current active session context
-  - session switching does not break existing runs
-
-### P3.3 Worktree isolation
-- Owner: Git/Runtime
-- Estimate: 4 days
-- Dependencies: P3.1
-- Scope:
-  - session-level worktree option
-  - isolated patch/test execution flow
-- Acceptance Criteria:
-  - concurrent sessions do not conflict on same repo
-
-## Phase 4 - GitHub and PR Operations (Weeks 8-9)
-
-### P4.1 GitHub command set (minimum)
-- Owner: Integrations
-- Estimate: 4 days
-- Dependencies: Phase 2
-- Scope:
-  - create PR, read PR comments, and link issues
-- Acceptance Criteria:
-  - branch + PR flow can complete in one command
-  - PR URL is returned in CLI output
-
-### P4.2 Automated PR summary
-- Owner: Orchestrator + Reviewer
+### P2.3 Planner redesign
+- Owner: Agents
 - Estimate: 2 days
+- Dependencies: P2.2
+- Scope:
+  - planner role shifts from plan owner to refinement worker
+  - optional refinement pass only
+- Acceptance Criteria:
+  - planner cannot return an arbitrary free-form final plan
+  - Orch validates and finalizes the final structured plan
+
+---
+
+## Phase 3 - Constrained Coding and Scope Control (Weeks 5-6)
+
+### P3.1 Execution contract builder
+- Owner: Execution Engine
+- Estimate: 3 days
+- Dependencies: Phase 2
+- Scope:
+  - allowed files
+  - inspect files
+  - required edits
+  - prohibited actions
+  - patch budget
+- Acceptance Criteria:
+  - every coding run gets an execution contract
+  - execution contract persists in run state
+
+### P3.2 Coder input/output redesign
+- Owner: Agents
+- Estimate: 4 days
+- Dependencies: P3.1
+- Scope:
+  - coder receives task brief + structured plan + execution contract
+  - coder returns diff + change summary + criterion mapping + assumptions
+- Acceptance Criteria:
+  - coder output is machine-checkable
+  - empty patch returns a structured reason
+
+### P3.3 Scope guard and minimal diff enforcement
+- Owner: Quality + Patch Engine
+- Estimate: 3 days
+- Dependencies: P3.2
+- Scope:
+  - out-of-scope file detection
+  - unrelated edit detection
+  - patch budget enforcement
+- Acceptance Criteria:
+  - out-of-scope changes fail before tests
+  - large/unrelated diffs are visible and classifiable
+
+---
+
+## Phase 4 - Validation Gates and Bounded Fix Loops (Weeks 7-8)
+
+### P4.1 Gate framework
+- Owner: Quality
+- Estimate: 3 days
+- Dependencies: Phase 3
+- Scope:
+  - pluggable validation gate interface
+  - structured gate results
+  - stage-aware gate aggregation
+- Acceptance Criteria:
+  - validation no longer returns a single opaque error
+  - gate results are persisted and visible in logs
+
+### P4.2 Mandatory v1 gates
+- Owner: Quality
+- Estimate: 4 days
 - Dependencies: P4.1
 - Scope:
-  - generate PR body from plan + changes + test/review outputs
+  - patch hygiene
+  - scope compliance
+  - plan compliance
+  - syntax/build gate adapters
 - Acceptance Criteria:
-  - PR body is concise, accurate, and traceable
+  - failed gate names and reasons are explicit
+  - retry logic can consume gate outputs directly
 
-## Phase 5 - MCP and LSP Integrations (Weeks 10-11)
-
-### P5.1 MCP client layer
-- Owner: Integrations
-- Estimate: 4 days
-- Dependencies: Phase 2
-- Scope:
-  - MCP server config, connection handling, timeout/error policy
-- Acceptance Criteria:
-  - stable calls with at least 2 MCP server profiles
-
-### P5.2 LSP-powered context quality
-- Owner: Repo/Context
-- Estimate: 4 days
-- Dependencies: P5.1 (optional)
-- Scope:
-  - symbol/reference/definition-driven file targeting
-  - improved planner context precision
-- Acceptance Criteria:
-  - measurable increase in target-file selection quality on large repos
-
-## Phase 6 - Metrics, Stabilization, Release (Week 12)
-
-### P6.1 Stats and KPI collection
-- Owner: Runtime + Docs
+### P4.3 Bounded fix-loop contract
+- Owner: Orchestrator
 - Estimate: 3 days
-- Dependencies: All phases
+- Dependencies: P4.2
 - Scope:
-  - completion rate, review acceptance, retry rate, failure taxonomy
-  - baseline `orch stats` output
+  - retry prompt built from failed gates and failed tests
+  - repeated-error detection
+  - unresolved failure summary improvements
 - Acceptance Criteria:
-  - metrics are visible via a single command
-  - MVP targets are reportable
+  - retries are deterministic and targeted
+  - no free-form “try again” loop remains
 
-### P6.2 Export/import and release hardening
-- Owner: CLI + Storage
-- Estimate: 2 days
-- Dependencies: P6.1
+---
+
+## Phase 5 - Test Intelligence, Review, and Confidence (Weeks 9-10)
+
+### P5.1 Test matrix and failure classifier
+- Owner: Testing
+- Estimate: 4 days
+- Dependencies: Phase 4
 - Scope:
-  - session/run export-import
-  - release candidate checklist and regression smoke suite
+  - test requirements model
+  - targeted test selection hooks
+  - failure category classification
 - Acceptance Criteria:
-  - exported data can be imported and resumed
-  - release smoke checks pass before cut
+  - required tests are explicitly tracked
+  - test failures are classified into stable categories
+
+### P5.2 Review rubric engine
+- Owner: Review
+- Estimate: 4 days
+- Dependencies: Phase 4
+- Scope:
+  - scorecard dimensions
+  - accept/revise/reject thresholds
+  - finding summaries
+- Acceptance Criteria:
+  - review results are structured scorecards
+  - revise decisions contain actionable findings
+
+### P5.3 Confidence scoring v1
+- Owner: Runtime + Review
+- Estimate: 2 days
+- Dependencies: P5.1, P5.2
+- Scope:
+  - confidence score from validation/test/review/retry signals
+  - CLI display of score and band
+- Acceptance Criteria:
+  - every completed run shows confidence
+  - confidence rationale is persisted
+
+---
+
+## Phase 6 - Benchmarks, Explainability, and Hardening (Weeks 11-12)
+
+### P6.1 Golden benchmark task suite
+- Owner: Bench
+- Estimate: 4 days
+- Dependencies: Phase 5
+- Scope:
+  - create initial benchmark tasks
+  - scoring criteria and expected scope definitions
+- Acceptance Criteria:
+  - benchmark suite covers core task categories
+  - replay results can be compared across models
+
+### P6.2 Explainability and stats
+- Owner: CLI + Runtime
+- Estimate: 3 days
+- Dependencies: Phase 5
+- Scope:
+  - `orch stats`
+  - `orch explain <run-id>` design groundwork or first implementation
+  - improved run summaries
+- Acceptance Criteria:
+  - user can understand why a run passed, failed, or got low confidence
+
+### P6.3 Hardening and rollout policy
+- Owner: Runtime + Docs
+- Estimate: 2 days
+- Dependencies: P6.1, P6.2
+- Scope:
+  - shadow -> soft -> hard gate rollout
+  - release checklist
+  - benchmark regression review
+- Acceptance Criteria:
+  - new gates have rollout mode
+  - release candidate process includes benchmark validation
+
+---
 
 ## Sprint 1 (Start Immediately)
 
-- [ ] Permission mode + destructive-action gate
-- [ ] Retry policy: validation/test/review max retry
-- [ ] `.orch/lock` + stale lock handling
-- [ ] Patch conflict detection + best-patch summary
+Primary objective: create the contract foundation and begin Orch-owned planning.
+
+- [ ] Add Task Brief / Structured Plan / Execution Contract / Validation Result models
+- [ ] Extend run state + persistence for structured artifacts
+- [ ] Implement task normalizer v0
+- [ ] Add `orch plan --json`
+- [ ] Add acceptance criteria generator v0
 
 ### Sprint 1 Task Breakdown
 
-#### S1-T1 Permission middleware
-- Owner: Core CLI
+#### S1-T1 Contract types and tests
+- Owner: Core Runtime
 - Estimate: 1.5 days
 - Dependency: None
-- Done Criteria: write/apply/bash blocked in `plan` mode
+- Done Criteria:
+  - typed models added
+  - JSON roundtrip tests added
 
-#### S1-T2 Orchestrator retry state
-- Owner: Orchestrator
+#### S1-T2 Run state/storage extension
+- Owner: Storage
 - Estimate: 1.5 days
 - Dependency: S1-T1
-- Done Criteria: max retry enforcement + terminal fail state
+- Done Criteria:
+  - run state includes structured contract fields
+  - JSON/SQLite persistence updated or staged for new fields
 
-#### S1-T3 Lock manager
-- Owner: Runtime
+#### S1-T3 Task normalizer v0
+- Owner: Planning
 - Estimate: 1 day
-- Dependency: None
-- Done Criteria: lock acquire/release + stale lock cleanup
+- Dependency: S1-T1
+- Done Criteria:
+  - task type + risk level + normalized goal generation works
 
-#### S1-T4 Patch conflict reporting
-- Owner: Patch Engine
+#### S1-T4 `orch plan --json`
+- Owner: CLI
 - Estimate: 1 day
-- Dependency: None
-- Done Criteria: conflict file list + clear error output
+- Dependency: S1-T1
+- Done Criteria:
+  - JSON plan output available from CLI
 
-#### S1-T5 Tests and docs update
-- Owner: QA + Docs
+#### S1-T5 Acceptance criteria generator v0
+- Owner: Planning
 - Estimate: 1 day
-- Dependency: S1-T1..S1-T4
-- Done Criteria: integration tests + updated command docs
+- Dependency: S1-T3
+- Done Criteria:
+  - generated plans include acceptance criteria and test requirements
+
+#### S1-T6 Docs + examples update
+- Owner: Docs
+- Estimate: 0.5 day
+- Dependency: S1-T1..S1-T5
+- Done Criteria:
+  - README/docs mention structured planning direction
+
+---
+
+## Sprint 2 Preview
+
+- deterministic file targeting
+- structured plan compiler
+- planner redesign
+- execution contract builder
+
+## Sprint 3 Preview
+
+- coder I/O redesign
+- scope guard
+- patch budget enforcement
+- plan compliance gate
+
+## Sprint 4 Preview
+
+- gate framework
+- test failure classifier
+- bounded fix-loop contract
+- review rubric
+
+---
 
 ## Operating Rules
 
-- Every task must include owner, estimate, dependency, and acceptance criteria.
-- Each PR should include at most 2 tasks from the same phase.
-- Any runtime behavior change must add at least one integration test.
-- Safety-related changes should be guarded with feature flags.
+- Every task must include owner, estimate, dependency, acceptance criteria, and test strategy.
+- Any runtime behavior change must add at least one unit or integration test.
+- New quality gates should launch in shadow mode first unless they close an active safety gap.
+- The model may be swapped; the process contract may not be bypassed.
+- Any scope expansion must be explicit and logged.
+
+---
 
 ## KPI Tracking
 
-- Task completion rate
-- Patch apply success rate
-- Review acceptance rate
-- Average run duration
-- Post-retry failure rate
+Primary:
+- task success rate
+- first-pass validation rate
+- first-pass test pass rate
+- review acceptance rate
+- unplanned file touch rate
+- retry exhaustion rate
+- model variance score
+
+Secondary:
+- average run duration
+- patch size median
+- confidence accuracy
+- post-apply defect rate
+
+---
 
 ## Risks and Mitigations
 
-- Scope growth -> no off-phase work without phase-gate approval.
-- Tool complexity -> define contract first, then implement.
-- Integration fragility -> feature flags and canary rollout.
-- Performance regression -> benchmark gate at sprint end.
+- **Over-design risk** -> keep schemas v0-small, expand iteratively.
+- **Over-constraining models** -> introduce shadow/soft enforcement before hard fail.
+- **Validation slowdown** -> separate targeted and full validation profiles.
+- **Benchmark blind spots** -> start with small but representative golden tasks.
+- **Prompt regressions** -> move logic into contracts and gates, not prompt wording.
+
+---
+
+## Definition of 90-Day Success
+
+This 90-day plan is successful if by the end of Phase 6:
+
+1. Orch owns the plan structure
+2. coding runs use execution contracts
+3. validation is gate-based and structured
+4. review is rubric-based
+5. confidence is visible to the user
+6. benchmark tasks exist to measure model variance
+7. Orch is meaningfully closer to being a systematic coding engine rather than a free-form agent shell
