@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -11,6 +12,8 @@ import (
 	"github.com/furkanbeydemir/orch/internal/orchestrator"
 	"github.com/spf13/cobra"
 )
+
+var planJSON bool
 
 // planCmd represents the `orch plan` command.
 var planCmd = &cobra.Command{
@@ -22,6 +25,7 @@ var planCmd = &cobra.Command{
 }
 
 func init() {
+	planCmd.Flags().BoolVar(&planJSON, "json", false, "Output the structured plan as JSON")
 	rootCmd.AddCommand(planCmd)
 }
 
@@ -42,47 +46,102 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		CreatedAt:   time.Now(),
 	}
 
-	fmt.Printf("📝 Generating plan: %s\n\n", task.Description)
-
 	orch := orchestrator.New(cfg, cwd, verbose)
-	plan, err := orch.Plan(task)
+	taskBrief, plan, err := orch.PlanDetailed(task)
 	if err != nil {
 		return fmt.Errorf("plan generation failed: %w", err)
 	}
 
+	if planJSON {
+		payload := struct {
+			Task      *models.Task      `json:"task"`
+			TaskBrief *models.TaskBrief `json:"task_brief,omitempty"`
+			Plan      *models.Plan      `json:"plan"`
+		}{
+			Task:      task,
+			TaskBrief: taskBrief,
+			Plan:      plan,
+		}
+		encoded, marshalErr := json.MarshalIndent(payload, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("failed to encode plan output: %w", marshalErr)
+		}
+		fmt.Println(string(encoded))
+		return nil
+	}
+
+	fmt.Printf("📝 Generating plan: %s\n\n", task.Description)
 	fmt.Println("═══════════════════════════════════════")
 	fmt.Println("📋 IMPLEMENTATION PLAN")
 	fmt.Println("═══════════════════════════════════════")
 
-	if len(plan.Steps) > 0 {
+	if taskBrief != nil {
+		fmt.Printf("\n🎯 Task Type: %s\n", taskBrief.TaskType)
+		fmt.Printf("⚠️  Risk Level: %s\n", taskBrief.RiskLevel)
+		if taskBrief.NormalizedGoal != "" {
+			fmt.Printf("🧭 Goal: %s\n", taskBrief.NormalizedGoal)
+		}
+	}
+
+	if plan != nil && plan.Summary != "" {
+		fmt.Printf("\n🗺️  Summary: %s\n", plan.Summary)
+	}
+
+	if plan != nil && len(plan.Steps) > 0 {
 		fmt.Println("\n📌 Steps:")
 		for _, step := range plan.Steps {
 			fmt.Printf("  %d. %s\n", step.Order, step.Description)
 		}
 	}
 
-	if len(plan.FilesToModify) > 0 {
+	if plan != nil && len(plan.FilesToModify) > 0 {
 		fmt.Println("\n📝 Files To Modify:")
 		for _, f := range plan.FilesToModify {
 			fmt.Printf("  - %s\n", f)
 		}
 	}
 
-	if len(plan.FilesToInspect) > 0 {
+	if plan != nil && len(plan.FilesToInspect) > 0 {
 		fmt.Println("\n🔍 Files To Inspect:")
 		for _, f := range plan.FilesToInspect {
 			fmt.Printf("  - %s\n", f)
 		}
 	}
 
-	if len(plan.Risks) > 0 {
+	if plan != nil && len(plan.AcceptanceCriteria) > 0 {
+		fmt.Println("\n✅ Acceptance Criteria:")
+		for _, criterion := range plan.AcceptanceCriteria {
+			fmt.Printf("  - %s\n", criterion.Description)
+		}
+	}
+
+	if plan != nil && len(plan.Invariants) > 0 {
+		fmt.Println("\n🧱 Invariants:")
+		for _, invariant := range plan.Invariants {
+			fmt.Printf("  - %s\n", invariant)
+		}
+	}
+
+	if plan != nil && len(plan.ForbiddenChanges) > 0 {
+		fmt.Println("\n⛔ Forbidden Changes:")
+		for _, forbidden := range plan.ForbiddenChanges {
+			fmt.Printf("  - %s\n", forbidden)
+		}
+	}
+
+	if plan != nil && len(plan.Risks) > 0 {
 		fmt.Println("\n⚠️  Risks:")
 		for _, r := range plan.Risks {
 			fmt.Printf("  - %s\n", r)
 		}
 	}
 
-	if plan.TestStrategy != "" {
+	if plan != nil && len(plan.TestRequirements) > 0 {
+		fmt.Println("\n🧪 Test Requirements:")
+		for _, req := range plan.TestRequirements {
+			fmt.Printf("  - %s\n", req)
+		}
+	} else if plan != nil && plan.TestStrategy != "" {
 		fmt.Printf("\n🧪 Test Strategy: %s\n", plan.TestStrategy)
 	}
 

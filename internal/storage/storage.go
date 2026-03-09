@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/furkanbeydemir/orch/internal/config"
@@ -23,6 +24,7 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	ErrSessionClosed   = errors.New("session is closed")
 	ErrNameConflict    = errors.New("session name conflict")
+	idCounter          uint64
 )
 
 type Store struct {
@@ -320,9 +322,16 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 	}
 
 	taskJSON, _ := json.Marshal(state.Task)
+	taskBriefJSON, _ := json.Marshal(state.TaskBrief)
 	planJSON, _ := json.Marshal(state.Plan)
+	executionContractJSON, _ := json.Marshal(state.ExecutionContract)
 	patchJSON, _ := json.Marshal(state.Patch)
+	validationResultsJSON, _ := json.Marshal(state.ValidationResults)
+	retryDirectiveJSON, _ := json.Marshal(state.RetryDirective)
 	reviewJSON, _ := json.Marshal(state.Review)
+	reviewScorecardJSON, _ := json.Marshal(state.ReviewScorecard)
+	confidenceJSON, _ := json.Marshal(state.Confidence)
+	testFailuresJSON, _ := json.Marshal(state.TestFailures)
 	retriesJSON, _ := json.Marshal(state.Retries)
 	unresolvedJSON, _ := json.Marshal(state.UnresolvedFailures)
 
@@ -333,14 +342,22 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 
 	const upsertRun = `
 		INSERT INTO runs(
-			id, project_id, session_id, task_json, status, plan_json, patch_json, review_json,
-			test_results, retries_json, unresolved_failures_json, best_patch_summary, error, started_at, completed_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
+			patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json, confidence_json, test_failures_json, test_results, retries_json,
+			unresolved_failures_json, best_patch_summary, error, started_at, completed_at
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
+			task_brief_json=excluded.task_brief_json,
 			status=excluded.status,
 			plan_json=excluded.plan_json,
+			execution_contract_json=excluded.execution_contract_json,
 			patch_json=excluded.patch_json,
+			validation_results_json=excluded.validation_results_json,
+			retry_directive_json=excluded.retry_directive_json,
 			review_json=excluded.review_json,
+			review_scorecard_json=excluded.review_scorecard_json,
+			confidence_json=excluded.confidence_json,
+			test_failures_json=excluded.test_failures_json,
 			test_results=excluded.test_results,
 			retries_json=excluded.retries_json,
 			unresolved_failures_json=excluded.unresolved_failures_json,
@@ -353,10 +370,17 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 		state.ProjectID,
 		state.SessionID,
 		string(taskJSON),
+		nullJSON(taskBriefJSON),
 		string(state.Status),
 		nullJSON(planJSON),
+		nullJSON(executionContractJSON),
 		nullJSON(patchJSON),
+		nullJSON(validationResultsJSON),
+		nullJSON(retryDirectiveJSON),
 		nullJSON(reviewJSON),
+		nullJSON(reviewScorecardJSON),
+		nullJSON(confidenceJSON),
+		nullJSON(testFailuresJSON),
 		nullString(state.TestResults),
 		string(retriesJSON),
 		nullJSON(unresolvedJSON),
@@ -477,7 +501,7 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("check schema version: %w", err)
 	}
 	if count > 0 {
-		return nil
+		return s.ensureRunColumns()
 	}
 
 	tx, err := s.db.Begin()
@@ -509,10 +533,17 @@ func (s *Store) migrate() error {
 			project_id TEXT NOT NULL REFERENCES projects(id),
 			session_id TEXT NOT NULL REFERENCES sessions(id),
 			task_json TEXT NOT NULL,
+			task_brief_json TEXT,
 			status TEXT NOT NULL,
 			plan_json TEXT,
+			execution_contract_json TEXT,
 			patch_json TEXT,
+			validation_results_json TEXT,
+			retry_directive_json TEXT,
 			review_json TEXT,
+			review_scorecard_json TEXT,
+			confidence_json TEXT,
+			test_failures_json TEXT,
 			test_results TEXT,
 			retries_json TEXT,
 			unresolved_failures_json TEXT,
@@ -548,7 +579,62 @@ func (s *Store) migrate() error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration transaction: %w", err)
 	}
+	return s.ensureRunColumns()
+}
+
+func (s *Store) ensureRunColumns() error {
+	existing, err := s.runColumns()
+	if err != nil {
+		return err
+	}
+
+	required := map[string]string{
+		"task_brief_json":         "TEXT",
+		"execution_contract_json": "TEXT",
+		"validation_results_json": "TEXT",
+		"retry_directive_json":    "TEXT",
+		"review_scorecard_json":   "TEXT",
+		"confidence_json":         "TEXT",
+		"test_failures_json":      "TEXT",
+	}
+
+	for column, definition := range required {
+		if _, ok := existing[column]; ok {
+			continue
+		}
+		statement := fmt.Sprintf("ALTER TABLE runs ADD COLUMN %s %s", column, definition)
+		if _, err := s.db.Exec(statement); err != nil {
+			return fmt.Errorf("add runs column %s: %w", column, err)
+		}
+	}
+
 	return nil
+}
+
+func (s *Store) runColumns() (map[string]struct{}, error) {
+	rows, err := s.db.Query("PRAGMA table_info(runs)")
+	if err != nil {
+		return nil, fmt.Errorf("query runs table info: %w", err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return nil, fmt.Errorf("scan runs table info: %w", err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate runs table info: %w", err)
+	}
+	return columns, nil
 }
 
 func (s *Store) findSession(projectID, nameOrID string) (Session, error) {
@@ -615,7 +701,8 @@ func activeSessionKey(projectID string) string {
 }
 
 func newID(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UnixNano())
+	seq := atomic.AddUint64(&idCounter, 1)
+	return fmt.Sprintf("%s-%d-%d", prefix, time.Now().UnixNano(), seq)
 }
 
 func nullString(v string) string {

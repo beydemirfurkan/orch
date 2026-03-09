@@ -12,12 +12,16 @@ type Agent interface {
 }
 
 type Input struct {
-	Task        *models.Task
-	RepoMap     *models.RepoMap
-	Plan        *models.Plan
-	Patch       *models.Patch
-	Context     *models.ContextResult
-	TestResults string
+	Task              *models.Task
+	TaskBrief         *models.TaskBrief
+	RepoMap           *models.RepoMap
+	Plan              *models.Plan
+	ExecutionContract *models.ExecutionContract
+	Patch             *models.Patch
+	Context           *models.ContextResult
+	ValidationResults []models.ValidationResult
+	RetryDirective    *models.RetryDirective
+	TestResults       string
 }
 
 type Output struct {

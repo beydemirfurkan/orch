@@ -108,6 +108,47 @@ func TestSaveRunState(t *testing.T) {
 			Description: "save run state",
 			CreatedAt:   time.Now(),
 		},
+		TaskBrief: &models.TaskBrief{
+			TaskID:         "task-1",
+			UserRequest:    "save run state",
+			NormalizedGoal: "Address task: save run state",
+			TaskType:       models.TaskTypeChore,
+			RiskLevel:      models.RiskLow,
+		},
+		Plan: &models.Plan{
+			TaskID:    "task-1",
+			Summary:   "Address task: save run state",
+			TaskType:  models.TaskTypeChore,
+			RiskLevel: models.RiskLow,
+			Steps:     []models.PlanStep{{Order: 1, Description: "Persist the run state."}},
+		},
+		ExecutionContract: &models.ExecutionContract{
+			TaskID:       "task-1",
+			AllowedFiles: []string{"internal/storage/storage.go"},
+			PatchBudget:  models.PatchBudget{MaxFiles: 1, MaxChangedLines: 20},
+		},
+		ValidationResults: []models.ValidationResult{{
+			Name:     "task_brief_valid",
+			Stage:    "planning",
+			Status:   models.ValidationPass,
+			Severity: models.SeverityLow,
+			Summary:  "task brief persisted",
+		}},
+		RetryDirective: &models.RetryDirective{
+			Stage:        "validation",
+			Attempt:      1,
+			FailedGates:  []string{"plan_compliance"},
+			Instructions: []string{"Update the required file."},
+		},
+		Confidence: &models.ConfidenceReport{
+			Score:   0.74,
+			Band:    "medium",
+			Reasons: []string{"validation and planning artifacts are present"},
+		},
+		TestFailures: []models.TestFailure{{
+			Code:    "test_assertion_failure",
+			Summary: "expected 200 got 500",
+		}},
 		Status:    models.StatusCompleted,
 		StartedAt: time.Now(),
 	}
