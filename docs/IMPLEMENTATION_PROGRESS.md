@@ -11,6 +11,10 @@ Son güncelleme kapsamı:
 - bounded retry directive groundwork
 - review rubric engine
 - confidence scoring v1
+- confidence enforcement policy
+- test failure classifier v0
+- explain command v1
+- stats command v1
 
 ---
 
@@ -324,7 +328,94 @@ Sonuç:
 
 ---
 
-### 2.15 Test altyapısı güncellemeleri
+### 2.15 Confidence enforcement policy
+Eklenen dosyalar:
+- `docs/CONFIDENCE_ENFORCEMENT_POLICY.md`
+- `internal/confidence/policy.go`
+- `internal/confidence/policy_test.go`
+
+Yapılanlar:
+- confidence artık sadece görüntülenen skor değil, completion policy sinyali haline gelmeye başladı
+- review aşamasına şu gate'ler eklendi:
+  - `review_scorecard_valid`
+  - `review_decision_threshold_met`
+- default policy:
+  - `score >= 0.70` -> geçebilir
+  - `0.50 <= score < 0.70` -> revise
+  - `score < 0.50` -> hard fail
+- config tarafına confidence policy threshold'ları eklendi
+- confidence enforcement feature flag eklendi
+
+Sonuç:
+- Orch artık düşük güvenli run'ları tamamlanmış saymamak için mekanizma kazandı
+- confidence, gerçek karar katmanına dönüşmeye başladı
+
+---
+
+### 2.16 Test failure classifier v0
+Eklenen dosyalar:
+- `internal/testing/classifier.go`
+- `internal/testing/classifier_test.go`
+- `internal/orchestrator/test_classifier_test.go`
+
+Yapılanlar:
+- test failure sınıflandırması eklendi
+- test stage gate'leri structured hale geldi:
+  - `required_tests_executed`
+  - `required_tests_passed`
+- test retry directive artık failure code'lara göre daha hedefli instruction üretiyor
+- `TestFailures` artık run state ve persistence içine yazılıyor
+
+Sonuç:
+- test katmanı da deterministic quality signal üretmeye başladı
+- retry loop test tarafında daha anlamlı hale geldi
+
+---
+
+### 2.17 Explain command v1
+Eklenen dosyalar:
+- `cmd/explain.go`
+- `cmd/explain_test.go`
+- `docs/EXPLAIN_COMMAND_SPEC.md`
+
+Yapılanlar:
+- `orch explain [run-id]` komutu eklendi
+- run state içindeki structured artifact'ler okunabilir terminal özetine dönüştürüldü
+- latest run fallback desteği eklendi
+- interactive shell içine `/explain` eklendi
+
+Sonuç:
+- kullanıcı artık bir run'ın neden geçtiğini, neden revise olduğunu veya neden fail ettiğini görebiliyor
+- Orch için explainability yüzeyi oluşmaya başladı
+
+---
+
+### 2.18 Stats command v1
+Eklenen dosyalar:
+- `cmd/stats.go`
+- `cmd/stats_test.go`
+- `docs/STATS_COMMAND_SPEC.md`
+- `internal/runstore/store_test.go`
+
+Yapılanlar:
+- `orch stats` komutu eklendi
+- `.orch/runs/*.state` dosyaları okunup sıralanabiliyor
+- son N run için şu sinyaller toplanıyor:
+  - status breakdown
+  - review accept / revise counts
+  - average confidence
+  - confidence band dağılımı
+  - average retry count
+  - test failure code dağılımı
+- interactive shell içine `/stats` eklendi
+
+Sonuç:
+- Orch artık tek run explainability yanında toplu kalite görünürlüğü de sunuyor
+- control plane yaklaşımı telemetry tarafında da görünür hale gelmeye başladı
+
+---
+
+### 2.19 Test altyapısı güncellemeleri
 Eklenen testler:
 - `internal/planning/normalizer_test.go`
 - `internal/models/contracts_test.go`
@@ -367,18 +458,18 @@ Doğrulanan alanlar:
 - [x] Review rubric engine v0 var
 - [x] Review scorecard deterministic şekilde hesaplanmaya başladı
 - [x] Confidence scoring v1 var
+- [x] Confidence enforcement policy v1 var
 - [x] Test failure classifier v0 var
 - [x] Test gate sonuçları structured hale gelmeye başladı
 - [x] Persistence genişletmesi başladı
 
 ### Henüz eksik / sıradaki ana başlıklar
-- [ ] Review decision policy'yi daha da sertleştirmek / threshold tuning
-- [ ] Test failure classifier
+- [ ] Review / confidence threshold tuning
 - [ ] Richer plan compliance / criterion-to-change mapping
 - [ ] Scope expansion mekanizması
-- [ ] `orch explain` / `orch stats`
 - [ ] benchmark / model variance suite
-- [ ] confidence threshold enforcement policy
+- [ ] targeted test selector / test matrix
+- [ ] session-scoped and json telemetry views
 
 ---
 
@@ -392,34 +483,39 @@ Bugünkü durumda Orch şunları yapabiliyor:
 - retry loop'u structured hale getirmeye başlayabiliyor
 - review rubric ile deterministic scorecard üretebiliyor
 - review sonrası confidence score hesaplayabiliyor
+- düşük confidence sonuçlarını revise/fail politikasına sokabiliyor
+- test failure'larını sınıflandırabiliyor
+- `orch explain` ile tek run gerekçelerini gösterebiliyor
+- `orch stats` ile toplu kalite sinyallerini özetleyebiliyor
 
 Ama henüz şunlar eksik:
-- test failure taxonomy daha zayıf
 - criterion-to-change mapping hâlâ sığ
-- confidence henüz hard completion gate değil
-- explainability ve benchmark katmanları eksik
+- targeted test selection / matrix henüz yok
+- benchmark katmanı eksik
+- confidence threshold tuning daha erken aşamada
+- telemetry henüz session/json bazında zengin değil
 
 Yani kaldığımız yer:
 
-> Orch artık planning + validation + review + confidence ekseninde gerçek bir control plane olmaya başladı.
-> Sıradaki adım, test intelligence ve confidence enforcement tarafını güçlendirmek.
+> Orch artık planning + validation + test classification + review + confidence enforcement + explainability + telemetry ekseninde gerçek bir control plane olmaya başladı.
+> Sıradaki adım, daha akıllı test intelligence ve benchmark/telemetry derinliğini güçlendirmek.
 
 ---
 
 ## 5. Sıradaki Adım
 
-## Confidence Enforcement + Explainability
+## Richer Telemetry + Benchmark + Test Intelligence
 
 Bir sonraki implementasyon hedefi:
-- confidence score'u sadece görünür bir sinyal değil, completion policy için kullanılabilir hale getirmek
-- gerekiyorsa düşük confidence durumunda revise veya warning policy tanımlamak
-- `orch explain` / `orch stats` için confidence, review ve test sınıflandırma nedenlerini daha okunabilir hale getirmek
-- test intelligence katmanını ileride targeted selector / matrix ile zenginleştirmek
+- `orch stats` için session-scoped ve JSON output eklemek
+- confidence trend / retry hotspot gibi daha zengin telemetry üretmek
+- benchmark / model variance suite oluşturmak
+- targeted test selector / matrix katmanını eklemek
 
 ### Beklenen çıktı
-- düşük confidence durumunda davranış politikası netleşecek
-- kullanıcıya neden güvenildiği / neden güvenilmediği daha açık gösterilecek
-- explainability komutları için veri zemini güçlenecek
+- kalite görünürlüğü daha ölçülebilir hale gelecek
+- farklı model/provider davranışları daha kolay kıyaslanacak
+- test çalıştırma katmanı daha seçici ve akıllı hale gelecek
 
 ---
 

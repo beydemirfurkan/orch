@@ -456,6 +456,10 @@ func parseInteractiveInput(input string) ([]string, error) {
 			return append([]string{parts[0]}, parts[1:]...), nil
 		case "logs":
 			return append([]string{"logs"}, parts[1:]...), nil
+		case "explain":
+			return append([]string{"explain"}, parts[1:]...), nil
+		case "stats":
+			return append([]string{"stats"}, parts[1:]...), nil
 		case "session":
 			return append([]string{"session"}, parts[1:]...), nil
 		default:
@@ -573,6 +577,8 @@ func helpText() string {
 		"  /models                Alias for /model",
 		"  /model set <role> <model>  Set role model",
 		"  /logs [run-id]         Show logs",
+		"  /explain [run-id]      Explain a run using structured artifacts",
+		"  /stats                 Show quality stats for recent runs",
 		"  /session <subcommand>  Session operations",
 		"  /init                  Initialize project",
 		"  /verbose [on|off]      Toggle detailed run output",

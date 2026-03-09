@@ -1,4 +1,4 @@
-// Subcommands: init, plan, run, diff, apply, logs.
+// Subcommands: init, plan, run, diff, apply, logs, explain, stats.
 package cmd
 
 import (
@@ -27,7 +27,9 @@ Usage examples:
   orch run "fix auth bug"              # Run full pipeline
   orch diff                            # Show generated patch
   orch apply                           # Apply patch
-  orch logs                            # Show execution trace`,
+  orch logs                            # Show execution trace
+  orch explain                         # Explain latest run
+  orch stats                           # Show recent run quality stats`,
 	Version: "0.1.0",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return startInteractiveShell(sessionID)

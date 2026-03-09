@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/furkanbeydemir/orch/internal/config"
@@ -67,6 +68,15 @@ func LoadLatestRunState(repoRoot string) (*models.RunState, error) {
 		return nil, fmt.Errorf("latest run id is empty")
 	}
 
+	return LoadRunState(repoRoot, runID)
+}
+
+func LoadRunState(repoRoot, runID string) (*models.RunState, error) {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+
 	statePath := filepath.Join(repoRoot, config.OrchDir, config.RunsDir, runID+".state")
 	data, err := os.ReadFile(statePath)
 	if err != nil {
@@ -79,6 +89,41 @@ func LoadLatestRunState(repoRoot string) (*models.RunState, error) {
 	}
 
 	return &state, nil
+}
+
+func ListRunStates(repoRoot string, limit int) ([]*models.RunState, error) {
+	if err := config.EnsureOrchDir(repoRoot); err != nil {
+		return nil, err
+	}
+
+	runsDir := filepath.Join(repoRoot, config.OrchDir, config.RunsDir)
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return nil, fmt.Errorf("read runs dir: %w", err)
+	}
+
+	states := make([]*models.RunState, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".state") {
+			continue
+		}
+		runID := strings.TrimSuffix(entry.Name(), ".state")
+		state, err := LoadRunState(repoRoot, runID)
+		if err != nil {
+			return nil, fmt.Errorf("load run %s: %w", runID, err)
+		}
+		states = append(states, state)
+	}
+
+	sort.SliceStable(states, func(i, j int) bool {
+		return states[i].StartedAt.After(states[j].StartedAt)
+	})
+
+	if limit > 0 && len(states) > limit {
+		states = states[:limit]
+	}
+
+	return states, nil
 }
 
 func LoadLatestPatch(repoRoot string) (string, error) {
