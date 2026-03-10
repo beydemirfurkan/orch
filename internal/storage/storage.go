@@ -54,6 +54,44 @@ type RunRecord struct {
 	Error       string
 }
 
+type SessionMessage struct {
+	ID           string
+	SessionID    string
+	Role         string
+	ParentID     string
+	ProviderID   string
+	ModelID      string
+	FinishReason string
+	Error        string
+	CreatedAt    time.Time
+}
+
+type SessionPart struct {
+	ID        string
+	MessageID string
+	Type      string
+	Payload   string
+	Compacted bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type SessionSummary struct {
+	SessionID   string
+	SummaryText string
+	UpdatedAt   time.Time
+}
+
+type SessionMetrics struct {
+	SessionID     string
+	InputTokens   int
+	OutputTokens  int
+	TotalCost     float64
+	TurnCount     int
+	LastMessageID string
+	UpdatedAt     time.Time
+}
+
 func Open(repoRoot string) (*Store, error) {
 	if err := config.EnsureOrchDir(repoRoot); err != nil {
 		return nil, err
@@ -486,6 +524,640 @@ func (s *Store) ListRunsBySessionFiltered(sessionID string, limit int, statusFil
 	return result, nil
 }
 
+func (s *Store) GetLatestRunStateBySession(sessionID string) (*models.RunState, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+
+	row := s.db.QueryRow(
+		`SELECT id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
+		        patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json,
+		        confidence_json, test_failures_json, test_results, retries_json, unresolved_failures_json,
+		        best_patch_summary, error, started_at, completed_at
+		 FROM runs
+		 WHERE session_id = ?
+		 ORDER BY started_at DESC
+		 LIMIT 1`,
+		sessionID,
+	)
+
+	state, err := scanRunState(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("run state not found")
+		}
+		return nil, err
+	}
+	logs, logErr := s.listRunLogs(state.ID)
+	if logErr != nil {
+		return nil, logErr
+	}
+	state.Logs = logs
+	return state, nil
+}
+
+func (s *Store) GetRunState(projectID, runID string) (*models.RunState, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("project id is required")
+	}
+	if strings.TrimSpace(runID) == "" {
+		return nil, fmt.Errorf("run id is required")
+	}
+
+	row := s.db.QueryRow(
+		`SELECT id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
+		        patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json,
+		        confidence_json, test_failures_json, test_results, retries_json, unresolved_failures_json,
+		        best_patch_summary, error, started_at, completed_at
+		 FROM runs
+		 WHERE project_id = ? AND id = ?
+		 LIMIT 1`,
+		projectID,
+		runID,
+	)
+
+	state, err := scanRunState(row)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("run state not found")
+		}
+		return nil, err
+	}
+	logs, logErr := s.listRunLogs(state.ID)
+	if logErr != nil {
+		return nil, logErr
+	}
+	state.Logs = logs
+	return state, nil
+}
+
+func (s *Store) ListRunStatesByProject(projectID string, limit int) ([]*models.RunState, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, fmt.Errorf("project id is required")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
+		        patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json,
+		        confidence_json, test_failures_json, test_results, retries_json, unresolved_failures_json,
+		        best_patch_summary, error, started_at, completed_at
+		 FROM runs
+		 WHERE project_id = ?
+		 ORDER BY started_at DESC
+		 LIMIT ?`,
+		projectID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list run states: %w", err)
+	}
+	defer rows.Close()
+
+	states := make([]*models.RunState, 0)
+	for rows.Next() {
+		state, scanErr := scanRunState(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		logs, logErr := s.listRunLogs(state.ID)
+		if logErr != nil {
+			return nil, logErr
+		}
+		state.Logs = logs
+		states = append(states, state)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate run states: %w", err)
+	}
+
+	return states, nil
+}
+
+func (s *Store) LoadLatestPatchBySession(sessionID string) (string, error) {
+	state, err := s.GetLatestRunStateBySession(sessionID)
+	if err != nil {
+		return "", err
+	}
+	if state == nil || state.Patch == nil || strings.TrimSpace(state.Patch.RawDiff) == "" {
+		return "", fmt.Errorf("latest patch not found")
+	}
+	return state.Patch.RawDiff, nil
+}
+
+func (s *Store) listRunLogs(runID string) ([]models.LogEntry, error) {
+	rows, err := s.db.Query(
+		`SELECT timestamp, actor, step, message FROM run_logs WHERE run_id = ? ORDER BY id ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list run logs: %w", err)
+	}
+	defer rows.Close()
+
+	logs := make([]models.LogEntry, 0)
+	for rows.Next() {
+		var ts string
+		var entry models.LogEntry
+		if err := rows.Scan(&ts, &entry.Actor, &entry.Step, &entry.Message); err != nil {
+			return nil, fmt.Errorf("scan run log: %w", err)
+		}
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, ts); parseErr == nil {
+			entry.Timestamp = parsed
+		}
+		logs = append(logs, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate run logs: %w", err)
+	}
+	return logs, nil
+}
+
+type runStateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRunState(scanner runStateScanner) (*models.RunState, error) {
+	var (
+		id                    string
+		projectID             string
+		sessionID             string
+		taskJSON              string
+		taskBriefJSON         sql.NullString
+		status                string
+		planJSON              sql.NullString
+		executionContractJSON sql.NullString
+		patchJSON             sql.NullString
+		validationJSON        sql.NullString
+		retryDirectiveJSON    sql.NullString
+		reviewJSON            sql.NullString
+		reviewScorecardJSON   sql.NullString
+		confidenceJSON        sql.NullString
+		testFailuresJSON      sql.NullString
+		testResults           sql.NullString
+		retriesJSON           string
+		unresolvedJSON        sql.NullString
+		bestPatchSummary      sql.NullString
+		errorText             sql.NullString
+		startedAt             string
+		completedAt           sql.NullString
+	)
+
+	if err := scanner.Scan(
+		&id,
+		&projectID,
+		&sessionID,
+		&taskJSON,
+		&taskBriefJSON,
+		&status,
+		&planJSON,
+		&executionContractJSON,
+		&patchJSON,
+		&validationJSON,
+		&retryDirectiveJSON,
+		&reviewJSON,
+		&reviewScorecardJSON,
+		&confidenceJSON,
+		&testFailuresJSON,
+		&testResults,
+		&retriesJSON,
+		&unresolvedJSON,
+		&bestPatchSummary,
+		&errorText,
+		&startedAt,
+		&completedAt,
+	); err != nil {
+		return nil, err
+	}
+
+	state := &models.RunState{
+		ID:        id,
+		ProjectID: projectID,
+		SessionID: sessionID,
+		Status:    models.RunStatus(status),
+		Logs:      []models.LogEntry{},
+	}
+
+	if parsed, parseErr := time.Parse(time.RFC3339Nano, startedAt); parseErr == nil {
+		state.StartedAt = parsed
+	}
+	if completedAt.Valid {
+		if parsed, parseErr := time.Parse(time.RFC3339Nano, completedAt.String); parseErr == nil {
+			state.CompletedAt = &parsed
+		}
+	}
+	state.Error = strings.TrimSpace(errorText.String)
+	state.TestResults = strings.TrimSpace(testResults.String)
+	state.BestPatchSummary = strings.TrimSpace(bestPatchSummary.String)
+
+	if err := json.Unmarshal([]byte(taskJSON), &state.Task); err != nil {
+		return nil, fmt.Errorf("unmarshal task: %w", err)
+	}
+
+	if strings.TrimSpace(taskBriefJSON.String) != "" {
+		state.TaskBrief = &models.TaskBrief{}
+		if err := json.Unmarshal([]byte(taskBriefJSON.String), state.TaskBrief); err != nil {
+			return nil, fmt.Errorf("unmarshal task brief: %w", err)
+		}
+	}
+	if strings.TrimSpace(planJSON.String) != "" {
+		state.Plan = &models.Plan{}
+		if err := json.Unmarshal([]byte(planJSON.String), state.Plan); err != nil {
+			return nil, fmt.Errorf("unmarshal plan: %w", err)
+		}
+	}
+	if strings.TrimSpace(executionContractJSON.String) != "" {
+		state.ExecutionContract = &models.ExecutionContract{}
+		if err := json.Unmarshal([]byte(executionContractJSON.String), state.ExecutionContract); err != nil {
+			return nil, fmt.Errorf("unmarshal execution contract: %w", err)
+		}
+	}
+	if strings.TrimSpace(patchJSON.String) != "" {
+		state.Patch = &models.Patch{}
+		if err := json.Unmarshal([]byte(patchJSON.String), state.Patch); err != nil {
+			return nil, fmt.Errorf("unmarshal patch: %w", err)
+		}
+	}
+	if strings.TrimSpace(validationJSON.String) != "" {
+		if err := json.Unmarshal([]byte(validationJSON.String), &state.ValidationResults); err != nil {
+			return nil, fmt.Errorf("unmarshal validation results: %w", err)
+		}
+	}
+	if strings.TrimSpace(retryDirectiveJSON.String) != "" {
+		state.RetryDirective = &models.RetryDirective{}
+		if err := json.Unmarshal([]byte(retryDirectiveJSON.String), state.RetryDirective); err != nil {
+			return nil, fmt.Errorf("unmarshal retry directive: %w", err)
+		}
+	}
+	if strings.TrimSpace(reviewJSON.String) != "" {
+		state.Review = &models.ReviewResult{}
+		if err := json.Unmarshal([]byte(reviewJSON.String), state.Review); err != nil {
+			return nil, fmt.Errorf("unmarshal review: %w", err)
+		}
+	}
+	if strings.TrimSpace(reviewScorecardJSON.String) != "" {
+		state.ReviewScorecard = &models.ReviewScorecard{}
+		if err := json.Unmarshal([]byte(reviewScorecardJSON.String), state.ReviewScorecard); err != nil {
+			return nil, fmt.Errorf("unmarshal review scorecard: %w", err)
+		}
+	}
+	if strings.TrimSpace(confidenceJSON.String) != "" {
+		state.Confidence = &models.ConfidenceReport{}
+		if err := json.Unmarshal([]byte(confidenceJSON.String), state.Confidence); err != nil {
+			return nil, fmt.Errorf("unmarshal confidence: %w", err)
+		}
+	}
+	if strings.TrimSpace(testFailuresJSON.String) != "" {
+		if err := json.Unmarshal([]byte(testFailuresJSON.String), &state.TestFailures); err != nil {
+			return nil, fmt.Errorf("unmarshal test failures: %w", err)
+		}
+	}
+	if strings.TrimSpace(retriesJSON) != "" {
+		if err := json.Unmarshal([]byte(retriesJSON), &state.Retries); err != nil {
+			return nil, fmt.Errorf("unmarshal retries: %w", err)
+		}
+	}
+	if strings.TrimSpace(unresolvedJSON.String) != "" {
+		if err := json.Unmarshal([]byte(unresolvedJSON.String), &state.UnresolvedFailures); err != nil {
+			return nil, fmt.Errorf("unmarshal unresolved failures: %w", err)
+		}
+	}
+
+	return state, nil
+}
+
+func (s *Store) CreateMessageWithParts(message SessionMessage, parts []SessionPart) (SessionMessage, []SessionPart, error) {
+	if strings.TrimSpace(message.SessionID) == "" {
+		return SessionMessage{}, nil, fmt.Errorf("session id is required")
+	}
+	message.Role = strings.ToLower(strings.TrimSpace(message.Role))
+	if message.Role != "user" && message.Role != "assistant" && message.Role != "system" {
+		return SessionMessage{}, nil, fmt.Errorf("invalid message role: %s", message.Role)
+	}
+	if strings.TrimSpace(message.ID) == "" {
+		message.ID = newID("msg")
+	}
+	if message.CreatedAt.IsZero() {
+		message.CreatedAt = time.Now().UTC()
+	} else {
+		message.CreatedAt = message.CreatedAt.UTC()
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return SessionMessage{}, nil, fmt.Errorf("begin message transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	parentID := strings.TrimSpace(message.ParentID)
+	if _, err := tx.Exec(
+		`INSERT INTO session_messages(id, session_id, role, parent_id, provider_id, model_id, finish_reason, error, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		message.ID,
+		message.SessionID,
+		message.Role,
+		nullString(parentID),
+		nullString(message.ProviderID),
+		nullString(message.ModelID),
+		nullString(message.FinishReason),
+		nullString(message.Error),
+		message.CreatedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return SessionMessage{}, nil, fmt.Errorf("insert session message: %w", err)
+	}
+
+	inserted := make([]SessionPart, 0, len(parts))
+	for _, part := range parts {
+		partType := strings.ToLower(strings.TrimSpace(part.Type))
+		if partType == "" {
+			return SessionMessage{}, nil, fmt.Errorf("part type is required")
+		}
+		if strings.TrimSpace(part.ID) == "" {
+			part.ID = newID("part")
+		}
+		part.MessageID = message.ID
+		now := time.Now().UTC()
+		if part.CreatedAt.IsZero() {
+			part.CreatedAt = now
+		} else {
+			part.CreatedAt = part.CreatedAt.UTC()
+		}
+		if part.UpdatedAt.IsZero() {
+			part.UpdatedAt = part.CreatedAt
+		} else {
+			part.UpdatedAt = part.UpdatedAt.UTC()
+		}
+		part.Type = partType
+
+		compacted := 0
+		if part.Compacted {
+			compacted = 1
+		}
+
+		if _, err := tx.Exec(
+			`INSERT INTO session_parts(id, message_id, type, payload_json, compacted, created_at, updated_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?)`,
+			part.ID,
+			part.MessageID,
+			part.Type,
+			nullString(part.Payload),
+			compacted,
+			part.CreatedAt.Format(time.RFC3339Nano),
+			part.UpdatedAt.Format(time.RFC3339Nano),
+		); err != nil {
+			return SessionMessage{}, nil, fmt.Errorf("insert session part: %w", err)
+		}
+
+		inserted = append(inserted, part)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SessionMessage{}, nil, fmt.Errorf("commit message transaction: %w", err)
+	}
+
+	return message, inserted, nil
+}
+
+func (s *Store) ListSessionMessages(sessionID string, limit int) ([]SessionMessage, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	if limit <= 0 {
+		limit = 200
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, session_id, role, parent_id, provider_id, model_id, finish_reason, error, created_at
+		 FROM session_messages
+		 WHERE session_id = ?
+		 ORDER BY created_at ASC, id ASC
+		 LIMIT ?`,
+		sessionID,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list session messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages := make([]SessionMessage, 0)
+	for rows.Next() {
+		var item SessionMessage
+		var parentID sql.NullString
+		var providerID sql.NullString
+		var modelID sql.NullString
+		var finishReason sql.NullString
+		var errText sql.NullString
+		var createdAt string
+		if err := rows.Scan(&item.ID, &item.SessionID, &item.Role, &parentID, &providerID, &modelID, &finishReason, &errText, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan session message: %w", err)
+		}
+		item.ParentID = strings.TrimSpace(parentID.String)
+		item.ProviderID = strings.TrimSpace(providerID.String)
+		item.ModelID = strings.TrimSpace(modelID.String)
+		item.FinishReason = strings.TrimSpace(finishReason.String)
+		item.Error = strings.TrimSpace(errText.String)
+		if ts, parseErr := time.Parse(time.RFC3339Nano, createdAt); parseErr == nil {
+			item.CreatedAt = ts
+		}
+		messages = append(messages, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session messages: %w", err)
+	}
+
+	return messages, nil
+}
+
+func (s *Store) ListSessionParts(messageID string) ([]SessionPart, error) {
+	if strings.TrimSpace(messageID) == "" {
+		return nil, fmt.Errorf("message id is required")
+	}
+
+	rows, err := s.db.Query(
+		`SELECT id, message_id, type, payload_json, compacted, created_at, updated_at
+		 FROM session_parts
+		 WHERE message_id = ?
+		 ORDER BY created_at ASC, id ASC`,
+		messageID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list session parts: %w", err)
+	}
+	defer rows.Close()
+
+	parts := make([]SessionPart, 0)
+	for rows.Next() {
+		var item SessionPart
+		var compacted int
+		var payload sql.NullString
+		var createdAt string
+		var updatedAt string
+		if err := rows.Scan(&item.ID, &item.MessageID, &item.Type, &payload, &compacted, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan session part: %w", err)
+		}
+		item.Payload = payload.String
+		item.Compacted = compacted != 0
+		if ts, parseErr := time.Parse(time.RFC3339Nano, createdAt); parseErr == nil {
+			item.CreatedAt = ts
+		}
+		if ts, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+			item.UpdatedAt = ts
+		}
+		parts = append(parts, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session parts: %w", err)
+	}
+
+	return parts, nil
+}
+
+func (s *Store) UpsertSessionSummary(sessionID, summaryText string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("session id is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(
+		`INSERT INTO session_summaries(session_id, summary_text, updated_at)
+		 VALUES(?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET summary_text=excluded.summary_text, updated_at=excluded.updated_at`,
+		sessionID,
+		nullString(summaryText),
+		now,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert session summary: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetSessionSummary(sessionID string) (*SessionSummary, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	var summary SessionSummary
+	var updatedAt string
+	if err := s.db.QueryRow(
+		`SELECT session_id, summary_text, updated_at FROM session_summaries WHERE session_id = ?`,
+		sessionID,
+	).Scan(&summary.SessionID, &summary.SummaryText, &updatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query session summary: %w", err)
+	}
+	if ts, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+		summary.UpdatedAt = ts
+	}
+	return &summary, nil
+}
+
+func (s *Store) UpsertSessionMetrics(metrics SessionMetrics) error {
+	if strings.TrimSpace(metrics.SessionID) == "" {
+		return fmt.Errorf("session id is required")
+	}
+	metrics.UpdatedAt = time.Now().UTC()
+	_, err := s.db.Exec(
+		`INSERT INTO session_metrics(session_id, input_tokens, output_tokens, total_cost, turn_count, last_message_id, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(session_id) DO UPDATE SET
+		   input_tokens=excluded.input_tokens,
+		   output_tokens=excluded.output_tokens,
+		   total_cost=excluded.total_cost,
+		   turn_count=excluded.turn_count,
+		   last_message_id=excluded.last_message_id,
+		   updated_at=excluded.updated_at`,
+		metrics.SessionID,
+		metrics.InputTokens,
+		metrics.OutputTokens,
+		metrics.TotalCost,
+		metrics.TurnCount,
+		nullString(metrics.LastMessageID),
+		metrics.UpdatedAt.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert session metrics: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) GetSessionMetrics(sessionID string) (*SessionMetrics, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("session id is required")
+	}
+	var metrics SessionMetrics
+	var lastMessageID sql.NullString
+	var updatedAt string
+	if err := s.db.QueryRow(
+		`SELECT session_id, input_tokens, output_tokens, total_cost, turn_count, last_message_id, updated_at
+		 FROM session_metrics WHERE session_id = ?`,
+		sessionID,
+	).Scan(
+		&metrics.SessionID,
+		&metrics.InputTokens,
+		&metrics.OutputTokens,
+		&metrics.TotalCost,
+		&metrics.TurnCount,
+		&lastMessageID,
+		&updatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("query session metrics: %w", err)
+	}
+	metrics.LastMessageID = strings.TrimSpace(lastMessageID.String)
+	if ts, parseErr := time.Parse(time.RFC3339Nano, updatedAt); parseErr == nil {
+		metrics.UpdatedAt = ts
+	}
+	return &metrics, nil
+}
+
+func (s *Store) CompactSessionParts(sessionID string, keepLastMessages int) (int64, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return 0, fmt.Errorf("session id is required")
+	}
+	if keepLastMessages <= 0 {
+		keepLastMessages = 12
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.Exec(
+		`WITH keep AS (
+			SELECT id
+			FROM session_messages
+			WHERE session_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		 )
+		 UPDATE session_parts
+		 SET compacted = 1,
+		     payload_json = '[Old content compacted]',
+		     updated_at = ?
+		 WHERE compacted = 0
+		   AND message_id IN (
+			 SELECT id
+			 FROM session_messages
+			 WHERE session_id = ?
+			   AND id NOT IN (SELECT id FROM keep)
+		 )`,
+		sessionID,
+		keepLastMessages,
+		now,
+		sessionID,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("compact session parts: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read compacted rows: %w", err)
+	}
+	return affected, nil
+}
+
 func (s *Store) migrate() error {
 	const createMigrations = `
 		CREATE TABLE IF NOT EXISTS schema_migrations(
@@ -501,7 +1173,10 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("check schema version: %w", err)
 	}
 	if count > 0 {
-		return s.ensureRunColumns()
+		if err := s.ensureRunColumns(); err != nil {
+			return err
+		}
+		return s.ensureSessionStoreTables()
 	}
 
 	tx, err := s.db.Begin()
@@ -564,6 +1239,44 @@ func (s *Store) migrate() error {
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS session_messages(
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			parent_id TEXT,
+			provider_id TEXT,
+			model_id TEXT,
+			finish_reason TEXT,
+			error TEXT,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_messages_session_created
+			ON session_messages(session_id, created_at, id);`,
+		`CREATE TABLE IF NOT EXISTS session_parts(
+			id TEXT PRIMARY KEY,
+			message_id TEXT NOT NULL REFERENCES session_messages(id) ON DELETE CASCADE,
+			type TEXT NOT NULL,
+			payload_json TEXT,
+			compacted INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_parts_message_created
+			ON session_parts(message_id, created_at, id);`,
+		`CREATE TABLE IF NOT EXISTS session_summaries(
+			session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			summary_text TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS session_metrics(
+			session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_cost REAL NOT NULL DEFAULT 0,
+			turn_count INTEGER NOT NULL DEFAULT 0,
+			last_message_id TEXT,
+			updated_at TEXT NOT NULL
+		);`,
 	}
 
 	for _, stmt := range stmts {
@@ -579,7 +1292,61 @@ func (s *Store) migrate() error {
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit migration transaction: %w", err)
 	}
-	return s.ensureRunColumns()
+	if err := s.ensureRunColumns(); err != nil {
+		return err
+	}
+	return s.ensureSessionStoreTables()
+}
+
+func (s *Store) ensureSessionStoreTables() error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS session_messages(
+			id TEXT PRIMARY KEY,
+			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+			role TEXT NOT NULL,
+			parent_id TEXT,
+			provider_id TEXT,
+			model_id TEXT,
+			finish_reason TEXT,
+			error TEXT,
+			created_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_messages_session_created
+			ON session_messages(session_id, created_at, id);`,
+		`CREATE TABLE IF NOT EXISTS session_parts(
+			id TEXT PRIMARY KEY,
+			message_id TEXT NOT NULL REFERENCES session_messages(id) ON DELETE CASCADE,
+			type TEXT NOT NULL,
+			payload_json TEXT,
+			compacted INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_session_parts_message_created
+			ON session_parts(message_id, created_at, id);`,
+		`CREATE TABLE IF NOT EXISTS session_summaries(
+			session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			summary_text TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS session_metrics(
+			session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			total_cost REAL NOT NULL DEFAULT 0,
+			turn_count INTEGER NOT NULL DEFAULT 0,
+			last_message_id TEXT,
+			updated_at TEXT NOT NULL
+		);`,
+	}
+
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return fmt.Errorf("ensure session store tables: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func (s *Store) ensureRunColumns() error {
