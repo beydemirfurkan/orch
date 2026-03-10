@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -26,6 +27,11 @@ type Client struct {
 type requester interface {
 	Do(req *http.Request) (*http.Response, error)
 }
+
+const (
+	defaultAPIBaseURL   = "https://api.openai.com/v1"
+	defaultCodexBaseURL = "https://chatgpt.com/backend-api"
+)
 
 func New(cfg config.OpenAIProviderConfig) *Client {
 	timeout := time.Duration(cfg.TimeoutSeconds) * time.Second
@@ -62,12 +68,21 @@ func (c *Client) Validate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	mode := c.authMode()
+	if mode == "account" {
+		if _, accountErr := extractAccountID(key); accountErr != nil {
+			return &providers.Error{Code: providers.ErrAuthError, Message: "invalid account token", Cause: accountErr}
+		}
+		return nil
+	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(c.cfg.BaseURL, "/")+"/models", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.modelsURL(mode), nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+key)
+	if err := c.applyAuthHeaders(req, mode, key); err != nil {
+		return err
+	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -113,6 +128,7 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 	if err != nil {
 		return providers.ChatResponse{}, err
 	}
+	mode := c.authMode()
 
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
@@ -144,11 +160,13 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.cfg.BaseURL, "/")+"/responses", bytes.NewReader(bodyBytes))
+		httpReq, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, c.responsesURL(mode), bytes.NewReader(bodyBytes))
 		if reqErr != nil {
 			return providers.ChatResponse{}, reqErr
 		}
-		httpReq.Header.Set("Authorization", "Bearer "+key)
+		if err := c.applyAuthHeaders(httpReq, mode, key); err != nil {
+			return providers.ChatResponse{}, err
+		}
 		httpReq.Header.Set("Content-Type", "application/json")
 
 		httpResp, doErr := doer.Do(httpReq)
@@ -337,7 +355,7 @@ func isRetryable(err error) bool {
 }
 
 func (c *Client) resolveAuthToken(ctx context.Context) (string, error) {
-	mode := strings.ToLower(strings.TrimSpace(c.cfg.AuthMode))
+	mode := c.authMode()
 	if mode == "" {
 		mode = "api_key"
 	}
@@ -373,4 +391,108 @@ func (c *Client) resolveAuthToken(ctx context.Context) (string, error) {
 	default:
 		return "", &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("unsupported auth mode: %s", mode)}
 	}
+}
+
+func (c *Client) authMode() string {
+	mode := strings.ToLower(strings.TrimSpace(c.cfg.AuthMode))
+	if mode == "" {
+		return "api_key"
+	}
+	return mode
+}
+
+func (c *Client) baseURLForMode(mode string) string {
+	base := strings.TrimSpace(c.cfg.BaseURL)
+	base = strings.TrimRight(base, "/")
+	if mode == "account" {
+		if base == "" || strings.EqualFold(base, strings.TrimRight(defaultAPIBaseURL, "/")) {
+			return defaultCodexBaseURL
+		}
+		return base
+	}
+	if base == "" {
+		return defaultAPIBaseURL
+	}
+	return base
+}
+
+func (c *Client) modelsURL(mode string) string {
+	base := c.baseURLForMode(mode)
+	if strings.HasSuffix(base, "/models") {
+		return base
+	}
+	return base + "/models"
+}
+
+func (c *Client) responsesURL(mode string) string {
+	base := c.baseURLForMode(mode)
+	if mode == "account" {
+		switch {
+		case strings.HasSuffix(base, "/codex/responses"):
+			return base
+		case strings.HasSuffix(base, "/codex"):
+			return base + "/responses"
+		default:
+			return base + "/codex/responses"
+		}
+	}
+	if strings.HasSuffix(base, "/responses") {
+		return base
+	}
+	return base + "/responses"
+}
+
+func (c *Client) applyAuthHeaders(req *http.Request, mode, token string) error {
+	req.Header.Set("Authorization", "Bearer "+token)
+	if mode != "account" {
+		return nil
+	}
+
+	accountID, err := extractAccountID(token)
+	if err != nil {
+		return &providers.Error{Code: providers.ErrAuthError, Message: "failed to extract account id from oauth token", Cause: err}
+	}
+	req.Header.Set("ChatGPT-Account-Id", accountID)
+	req.Header.Set("OpenAI-Beta", "responses=experimental")
+	req.Header.Set("originator", "orch")
+	return nil
+}
+
+func extractAccountID(token string) (string, error) {
+	token = strings.TrimSpace(token)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", fmt.Errorf("token is not a jwt")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return "", fmt.Errorf("failed to decode jwt payload: %w", err)
+		}
+	}
+
+	claims := map[string]any{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return "", fmt.Errorf("failed to parse jwt payload: %w", err)
+	}
+
+	if id, ok := claims["chatgpt_account_id"].(string); ok && strings.TrimSpace(id) != "" {
+		return strings.TrimSpace(id), nil
+	}
+	if nested, ok := claims["https://api.openai.com/auth"].(map[string]any); ok {
+		if id, ok := nested["chatgpt_account_id"].(string); ok && strings.TrimSpace(id) != "" {
+			return strings.TrimSpace(id), nil
+		}
+	}
+	if organizations, ok := claims["organizations"].([]any); ok && len(organizations) > 0 {
+		if org, ok := organizations[0].(map[string]any); ok {
+			if id, ok := org["id"].(string); ok && strings.TrimSpace(id) != "" {
+				return strings.TrimSpace(id), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("chatgpt_account_id claim not found")
 }

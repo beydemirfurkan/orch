@@ -448,7 +448,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeModal = nil
 
 					if method == "browser" || method == "headless" {
-						m.input.SetValue(fmt.Sprintf("/auth login --provider %s --method account", provider))
+						m.input.SetValue(fmt.Sprintf("/auth login --provider %s --method account --flow %s", provider, method))
 					} else if method == "api_key" {
 						m.input.SetValue(fmt.Sprintf("/auth login --provider %s --method api", provider))
 					} else {
@@ -974,12 +974,7 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 			}
 			return "", nil
 		}
-
-		state, loadErr := auth.Load(cwd)
-		if loadErr != nil || state == nil {
-			return "", loadErr
-		}
-		return state.AccessToken, nil
+		return auth.ResolveAccountAccessToken(cwd, "openai")
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Provider.OpenAI.TimeoutSeconds)*time.Second)
@@ -1067,7 +1062,7 @@ func helpText() string {
 		"  /connect               Open provider auth flow",
 		"  /provider set openai   Set default provider",
 		"  /auth status            Show authentication status",
-		"  /auth login [provider] --method account|api",
+		"  /auth login [provider] --method account|api --flow auto|browser|headless",
 		"  /auth list              List stored credentials",
 		"  /auth logout [provider] Remove stored credential",
 		"  /model                 Show role model mapping",

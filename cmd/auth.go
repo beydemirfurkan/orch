@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/furkanbeydemir/orch/internal/auth"
 	"github.com/furkanbeydemir/orch/internal/config"
@@ -15,11 +16,13 @@ import (
 var (
 	authModeFlag     string
 	authMethodFlag   string
+	authFlowFlag     string
 	authProviderFlag string
-	authTokenFlag    string
 	authEmailFlag    string
 	authAPIKeyFlag   string
 )
+
+var runOAuthLoginFlow = auth.RunOAuthFlow
 
 var authCmd = &cobra.Command{
 	Use:   "auth",
@@ -62,8 +65,8 @@ var authOpenAICmd = &cobra.Command{
 func init() {
 	authLoginCmd.Flags().StringVarP(&authProviderFlag, "provider", "p", "openai", "Provider id")
 	authLoginCmd.Flags().StringVarP(&authMethodFlag, "method", "m", "", "Auth method: api or account")
+	authLoginCmd.Flags().StringVar(&authFlowFlag, "flow", "auto", "Account auth flow: auto, browser, or headless")
 	authLoginCmd.Flags().StringVar(&authModeFlag, "mode", "", "Deprecated: account or api_key")
-	authLoginCmd.Flags().StringVar(&authTokenFlag, "token", "", "Account token")
 	authLoginCmd.Flags().StringVar(&authEmailFlag, "email", "", "Account email for status display")
 	authLoginCmd.Flags().StringVar(&authAPIKeyFlag, "api-key", "", "API key")
 
@@ -90,8 +93,8 @@ func newAuthCompatLoginCmd() *cobra.Command {
 	}
 	compat.Flags().StringVarP(&authProviderFlag, "provider", "p", "openai", "Provider id")
 	compat.Flags().StringVarP(&authMethodFlag, "method", "m", "", "Auth method: api or account")
+	compat.Flags().StringVar(&authFlowFlag, "flow", "auto", "Account auth flow: auto, browser, or headless")
 	compat.Flags().StringVar(&authModeFlag, "mode", "", "Deprecated: account or api_key")
-	compat.Flags().StringVar(&authTokenFlag, "token", "", "Account token")
 	compat.Flags().StringVar(&authEmailFlag, "email", "", "Account email for status display")
 	compat.Flags().StringVar(&authAPIKeyFlag, "api-key", "", "API key")
 	return compat
@@ -139,6 +142,13 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	if method == "api" {
+		if strings.TrimSpace(authFlowFlag) != "" {
+			flow := strings.ToLower(strings.TrimSpace(authFlowFlag))
+			if flow != "" && flow != "auto" {
+				return fmt.Errorf("--flow is only supported with --method account")
+			}
+		}
+
 		key := strings.TrimSpace(authAPIKeyFlag)
 		if key == "" {
 			fmt.Print("Paste OpenAI API key: ")
@@ -166,30 +176,32 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	token := strings.TrimSpace(authTokenFlag)
-	if token == "" {
-		fmt.Println("No token provided. Starting automated login...")
-		t, flowErr := auth.RunOAuthFlow()
-		if flowErr != nil {
-			fmt.Printf("\nAutomated login failed: %v\n", flowErr)
-			fmt.Print("Paste OpenAI account token manually: ")
-			line, readErr := bufio.NewReader(os.Stdin).ReadString('\n')
-			if readErr != nil {
-				return fmt.Errorf("failed to read token: %w", readErr)
-			}
-			token = strings.TrimSpace(line)
-		} else {
-			token = t
-		}
+	flow, err := resolveAccountFlow()
+	if err != nil {
+		return err
 	}
-	if token == "" {
-		return fmt.Errorf("account token cannot be empty")
+
+	fmt.Printf("Starting OpenAI account login (%s)...\n", flow)
+	result, err := runOAuthLoginFlow(flow)
+	if err != nil {
+		return fmt.Errorf("account login failed: %w", err)
+	}
+	if strings.TrimSpace(result.AccessToken) == "" {
+		return fmt.Errorf("oauth flow returned an empty access token")
+	}
+
+	email := strings.TrimSpace(result.Email)
+	if explicit := strings.TrimSpace(authEmailFlag); explicit != "" {
+		email = explicit
 	}
 
 	if err := auth.Set(cwd, provider, auth.Credential{
-		Type:        "oauth",
-		AccessToken: token,
-		Email:       strings.TrimSpace(authEmailFlag),
+		Type:         "oauth",
+		AccessToken:  strings.TrimSpace(result.AccessToken),
+		RefreshToken: strings.TrimSpace(result.RefreshToken),
+		ExpiresAt:    result.ExpiresAt,
+		AccountID:    strings.TrimSpace(result.AccountID),
+		Email:        email,
 	}); err != nil {
 		return err
 	}
@@ -201,6 +213,9 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Credential saved to .orch/auth.json (0600).")
 	fmt.Printf("Auth mode set to account. You can also use %s.\n", cfg.Provider.OpenAI.AccountTokenEnv)
+	if !result.ExpiresAt.IsZero() {
+		fmt.Printf("Token expires at: %s\n", result.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 	return nil
 }
 
@@ -229,11 +244,19 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	envAccount := strings.TrimSpace(os.Getenv(cfg.Provider.OpenAI.AccountTokenEnv)) != ""
 	storedAPIKey := cred != nil && cred.Type == "api" && strings.TrimSpace(cred.Key) != ""
 	storedAccount := cred != nil && cred.Type == "oauth" && strings.TrimSpace(cred.AccessToken) != ""
+	storedRefresh := cred != nil && cred.Type == "oauth" && strings.TrimSpace(cred.RefreshToken) != ""
 
 	fmt.Printf("api_key_env: %s (present=%t)\n", cfg.Provider.OpenAI.APIKeyEnv, envAPIKey)
 	fmt.Printf("account_token_env: %s (present=%t)\n", cfg.Provider.OpenAI.AccountTokenEnv, envAccount)
 	fmt.Printf("stored_api_key: %t\n", storedAPIKey)
 	fmt.Printf("stored_account_token: %t\n", storedAccount)
+	fmt.Printf("stored_account_refresh: %t\n", storedRefresh)
+	if cred != nil && cred.Type == "oauth" && !cred.ExpiresAt.IsZero() {
+		fmt.Printf("account_expires_at: %s\n", cred.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	if cred != nil && cred.Type == "oauth" && strings.TrimSpace(cred.AccountID) != "" {
+		fmt.Printf("account_id: %s\n", cred.AccountID)
+	}
 	if cred != nil && strings.TrimSpace(cred.Email) != "" {
 		fmt.Printf("email: %s\n", cred.Email)
 	}
@@ -318,7 +341,7 @@ func resolveAuthMethod() (string, error) {
 	if method == "api_key" || method == "key" {
 		method = "api"
 	}
-	if method == "oauth" || method == "browser" {
+	if method == "oauth" || method == "browser" || method == "headless" {
 		method = "account"
 	}
 	if method == "api" || method == "account" {
@@ -327,9 +350,6 @@ func resolveAuthMethod() (string, error) {
 
 	if strings.TrimSpace(authAPIKeyFlag) != "" {
 		return "api", nil
-	}
-	if strings.TrimSpace(authTokenFlag) != "" {
-		return "account", nil
 	}
 
 	fmt.Println("Select auth method:")
@@ -348,4 +368,26 @@ func resolveAuthMethod() (string, error) {
 		return "api", nil
 	}
 	return "", fmt.Errorf("invalid auth choice: %s", choice)
+}
+
+func resolveAccountFlow() (string, error) {
+	flow := strings.ToLower(strings.TrimSpace(authFlowFlag))
+	if flow == "" {
+		flow = "auto"
+	}
+
+	if flow == "auto" {
+		methodHint := strings.ToLower(strings.TrimSpace(authMethodFlag))
+		switch methodHint {
+		case "browser", "headless":
+			flow = methodHint
+		}
+	}
+
+	switch flow {
+	case "auto", "browser", "headless":
+		return flow, nil
+	default:
+		return "", fmt.Errorf("invalid account flow: %s (expected auto, browser, or headless)", flow)
+	}
 }

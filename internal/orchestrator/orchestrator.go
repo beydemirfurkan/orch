@@ -111,11 +111,7 @@ func (o *Orchestrator) attachProviderRuntime() {
 			}
 			return "", nil
 		}
-		state, err := auth.Load(o.repoRoot)
-		if err != nil || state == nil {
-			return "", err
-		}
-		return state.AccessToken, nil
+		return auth.ResolveAccountAccessToken(o.repoRoot, "openai")
 	})
 	registry.Register(client)
 	router := providers.NewRouter(o.cfg, registry)

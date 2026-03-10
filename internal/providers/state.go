@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/furkanbeydemir/orch/internal/auth"
 	"github.com/furkanbeydemir/orch/internal/config"
@@ -80,12 +81,20 @@ func ReadState(repoRoot string) (ProviderState, error) {
 		} else {
 			cred, credErr := auth.Get(repoRoot, "openai")
 			if credErr == nil && cred != nil && strings.TrimSpace(strings.ToLower(cred.Type)) == "oauth" && strings.TrimSpace(cred.AccessToken) != "" {
-				connected = true
-				source = "local"
+				expired := !cred.ExpiresAt.IsZero() && time.Now().UTC().After(cred.ExpiresAt)
+				if expired && strings.TrimSpace(cred.RefreshToken) == "" {
+					connected = false
+					state.OpenAI.Reason = "stored oauth token expired and missing refresh token"
+				} else {
+					connected = true
+					source = "local"
+				}
 			}
 		}
 		if !connected {
-			state.OpenAI.Reason = fmt.Sprintf("missing account token (%s or local auth)", cfg.Provider.OpenAI.AccountTokenEnv)
+			if state.OpenAI.Reason == "" {
+				state.OpenAI.Reason = fmt.Sprintf("missing account token (%s or local auth)", cfg.Provider.OpenAI.AccountTokenEnv)
+			}
 		}
 	default:
 		state.OpenAI.Reason = fmt.Sprintf("invalid auth mode (%s)", state.OpenAI.Mode)

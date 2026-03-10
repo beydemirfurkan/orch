@@ -64,15 +64,12 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	key := strings.TrimSpace(os.Getenv(cfg.Provider.OpenAI.APIKeyEnv))
 	accountToken := strings.TrimSpace(os.Getenv(cfg.Provider.OpenAI.AccountTokenEnv))
 
-	state, loadErr := auth.Load(cwd)
-	storedAccount := state != nil && strings.TrimSpace(state.AccessToken) != ""
 	storedCred, credErr := auth.Get(cwd, "openai")
 	storedAPIKey := credErr == nil && storedCred != nil && storedCred.Type == "api" && strings.TrimSpace(storedCred.Key) != ""
+	storedAccount := credErr == nil && storedCred != nil && storedCred.Type == "oauth" && strings.TrimSpace(storedCred.AccessToken) != ""
+	storedRefresh := credErr == nil && storedCred != nil && storedCred.Type == "oauth" && strings.TrimSpace(storedCred.RefreshToken) != ""
 	if credErr != nil {
 		checks = append(checks, check{name: "openai.stored_credential", ok: false, detail: credErr.Error()})
-	}
-	if loadErr != nil {
-		checks = append(checks, check{name: "openai.account_state", ok: false, detail: loadErr.Error()})
 	}
 
 	checks = append(checks, check{
@@ -84,7 +81,13 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	checks = append(checks, check{
 		name:   "openai.account_token",
 		ok:     accountToken != "" || storedAccount || authMode == "api_key",
-		detail: fmt.Sprintf("env=%s stored=%t", cfg.Provider.OpenAI.AccountTokenEnv, storedAccount),
+		detail: fmt.Sprintf("env=%s stored=%t refresh=%t", cfg.Provider.OpenAI.AccountTokenEnv, storedAccount, storedRefresh),
+	})
+
+	checks = append(checks, check{
+		name: "openai.account_refresh",
+		ok:   authMode != "account" || accountToken != "" || !storedAccount || storedRefresh || (storedCred != nil && storedCred.ExpiresAt.IsZero()) || time.Now().UTC().Before(storedCred.ExpiresAt),
+		detail: fmt.Sprintf("required_when_expired=%t", authMode == "account" && accountToken == ""),
 	})
 
 	checks = append(checks, check{name: "openai.model.planner", ok: strings.TrimSpace(cfg.Provider.OpenAI.Models.Planner) != "", detail: cfg.Provider.OpenAI.Models.Planner})
@@ -101,10 +104,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 				}
 				return "", nil
 			}
-			if state == nil {
-				return "", nil
+			resolved, resolveErr := auth.ResolveAccountAccessToken(cwd, "openai")
+			if resolveErr != nil {
+				return "", resolveErr
 			}
-			return state.AccessToken, nil
+			return resolved, nil
 		})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

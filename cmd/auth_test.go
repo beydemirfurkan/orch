@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"testing"
+	"time"
 
 	"github.com/furkanbeydemir/orch/internal/auth"
 	"github.com/furkanbeydemir/orch/internal/config"
@@ -18,10 +19,24 @@ func TestAuthLoginAccountAndLogout(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
+	originalOAuthRunner := runOAuthLoginFlow
+	runOAuthLoginFlow = func(flow string) (auth.OAuthResult, error) {
+		return auth.OAuthResult{
+			AccessToken:  "token-123",
+			RefreshToken: "refresh-123",
+			ExpiresAt:    time.Now().UTC().Add(1 * time.Hour),
+			AccountID:    "acc-123",
+			Email:        "oauth@example.com",
+		}, nil
+	}
+	defer func() {
+		runOAuthLoginFlow = originalOAuthRunner
+	}()
+
 	authModeFlag = "account"
 	authMethodFlag = ""
+	authFlowFlag = "headless"
 	authProviderFlag = "openai"
-	authTokenFlag = "token-123"
 	authEmailFlag = "user@example.com"
 	authAPIKeyFlag = ""
 	if err := runAuthLogin(nil, nil); err != nil {
@@ -34,6 +49,12 @@ func TestAuthLoginAccountAndLogout(t *testing.T) {
 	}
 	if state == nil || state.AccessToken != "token-123" {
 		t.Fatalf("expected stored account token")
+	}
+	if state.RefreshToken != "refresh-123" {
+		t.Fatalf("expected stored refresh token")
+	}
+	if state.AccountID != "acc-123" {
+		t.Fatalf("expected stored account id")
 	}
 
 	if err := runAuthLogout(nil, nil); err != nil {
@@ -61,8 +82,8 @@ func TestAuthLoginAPIKeyMode(t *testing.T) {
 
 	authModeFlag = ""
 	authMethodFlag = "api"
+	authFlowFlag = ""
 	authProviderFlag = "openai"
-	authTokenFlag = ""
 	authEmailFlag = ""
 	authAPIKeyFlag = "sk-test"
 	if err := runAuthLogin(nil, nil); err != nil {

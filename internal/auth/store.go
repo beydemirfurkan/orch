@@ -14,19 +14,25 @@ import (
 const authFile = "auth.json"
 
 type State struct {
-	Provider    string    `json:"provider"`
-	Mode        string    `json:"mode"`
-	AccessToken string    `json:"accessToken"`
-	Email       string    `json:"email,omitempty"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	Provider     string    `json:"provider"`
+	Mode         string    `json:"mode"`
+	AccessToken  string    `json:"accessToken"`
+	RefreshToken string    `json:"refreshToken,omitempty"`
+	ExpiresAt    time.Time `json:"expiresAt,omitempty"`
+	AccountID    string    `json:"accountId,omitempty"`
+	Email        string    `json:"email,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 type Credential struct {
-	Type        string    `json:"type"`
-	Key         string    `json:"key,omitempty"`
-	AccessToken string    `json:"accessToken,omitempty"`
-	Email       string    `json:"email,omitempty"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	Type         string    `json:"type"`
+	Key          string    `json:"key,omitempty"`
+	AccessToken  string    `json:"accessToken,omitempty"`
+	RefreshToken string    `json:"refreshToken,omitempty"`
+	ExpiresAt    time.Time `json:"expiresAt,omitempty"`
+	AccountID    string    `json:"accountId,omitempty"`
+	Email        string    `json:"email,omitempty"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 func Load(repoRoot string) (*State, error) {
@@ -39,9 +45,12 @@ func Load(repoRoot string) (*State, error) {
 	}
 
 	state := &State{
-		Provider:  "openai",
-		UpdatedAt: cred.UpdatedAt,
-		Email:     strings.TrimSpace(cred.Email),
+		Provider:     "openai",
+		UpdatedAt:    cred.UpdatedAt,
+		RefreshToken: strings.TrimSpace(cred.RefreshToken),
+		ExpiresAt:    cred.ExpiresAt,
+		AccountID:    strings.TrimSpace(cred.AccountID),
+		Email:        strings.TrimSpace(cred.Email),
 	}
 
 	switch strings.TrimSpace(strings.ToLower(cred.Type)) {
@@ -79,6 +88,8 @@ func LoadAll(repoRoot string) (map[string]Credential, error) {
 			cred.Type = strings.ToLower(strings.TrimSpace(cred.Type))
 			cred.Key = strings.TrimSpace(cred.Key)
 			cred.AccessToken = strings.TrimSpace(cred.AccessToken)
+			cred.RefreshToken = strings.TrimSpace(cred.RefreshToken)
+			cred.AccountID = strings.TrimSpace(cred.AccountID)
 			cred.Email = strings.TrimSpace(cred.Email)
 
 			if cred.Type == "" {
@@ -109,8 +120,11 @@ func LoadAll(repoRoot string) (map[string]Credential, error) {
 
 	mode := strings.ToLower(strings.TrimSpace(state.Mode))
 	cred := Credential{
-		Email:     strings.TrimSpace(state.Email),
-		UpdatedAt: state.UpdatedAt,
+		RefreshToken: strings.TrimSpace(state.RefreshToken),
+		ExpiresAt:    state.ExpiresAt,
+		AccountID:    strings.TrimSpace(state.AccountID),
+		Email:        strings.TrimSpace(state.Email),
+		UpdatedAt:    state.UpdatedAt,
 	}
 	if mode == "account" {
 		cred.Type = "oauth"
@@ -142,8 +156,11 @@ func Save(repoRoot string, state *State) error {
 
 	mode := strings.ToLower(strings.TrimSpace(state.Mode))
 	cred := Credential{
-		Email:       strings.TrimSpace(state.Email),
-		AccessToken: strings.TrimSpace(state.AccessToken),
+		Email:        strings.TrimSpace(state.Email),
+		AccessToken:  strings.TrimSpace(state.AccessToken),
+		RefreshToken: strings.TrimSpace(state.RefreshToken),
+		ExpiresAt:    state.ExpiresAt,
+		AccountID:    strings.TrimSpace(state.AccountID),
 	}
 	if mode == "account" {
 		cred.Type = "oauth"
@@ -200,6 +217,12 @@ func Set(repoRoot, provider string, cred Credential) error {
 	if kind != "api" && kind != "oauth" && kind != "wellknown" {
 		return fmt.Errorf("unsupported credential type: %s", cred.Type)
 	}
+	if kind == "api" && strings.TrimSpace(cred.Key) == "" {
+		return fmt.Errorf("api credential key cannot be empty")
+	}
+	if kind == "oauth" && strings.TrimSpace(cred.AccessToken) == "" {
+		return fmt.Errorf("oauth access token cannot be empty")
+	}
 
 	if err := config.EnsureOrchDir(repoRoot); err != nil {
 		return err
@@ -213,6 +236,8 @@ func Set(repoRoot, provider string, cred Credential) error {
 	cred.Type = kind
 	cred.Key = strings.TrimSpace(cred.Key)
 	cred.AccessToken = strings.TrimSpace(cred.AccessToken)
+	cred.RefreshToken = strings.TrimSpace(cred.RefreshToken)
+	cred.AccountID = strings.TrimSpace(cred.AccountID)
 	cred.Email = strings.TrimSpace(cred.Email)
 	cred.UpdatedAt = time.Now().UTC()
 

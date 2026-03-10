@@ -243,10 +243,10 @@ export OPENAI_API_KEY="your_api_key"
 ./orch auth login openai --method api
 ```
 
-Or account-token mode:
+Or account mode (OAuth):
 
 ```bash
-./orch auth login openai --method account --token "your_account_token"
+./orch auth login openai --method account --flow auto
 ```
 
 Validate runtime readiness:
@@ -359,7 +359,7 @@ Useful interactive commands:
 
 ```bash
 ./orch auth login openai --method api
-./orch auth login openai --method account --token "..."
+./orch auth login openai --method account --flow auto
 ./orch auth list
 ./orch auth status
 ./orch auth logout openai
