@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/furkanbeydemir/orch/internal/models"
-	"github.com/furkanbeydemir/orch/internal/runstore"
 	"github.com/spf13/cobra"
 )
 
@@ -29,14 +28,20 @@ func runExplain(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
+	ctx, err := loadSessionContext(cwd)
+	if err != nil {
+		return err
+	}
+	defer ctx.Store.Close()
+
 	var state *models.RunState
 	if len(args) == 0 {
-		state, err = runstore.LoadLatestRunState(cwd)
+		state, err = ctx.Store.GetLatestRunStateBySession(ctx.Session.ID)
 		if err != nil {
 			return fmt.Errorf("failed to load latest run state: %w", err)
 		}
 	} else {
-		state, err = runstore.LoadRunState(cwd, args[0])
+		state, err = ctx.Store.GetRunState(ctx.ProjectID, args[0])
 		if err != nil {
 			return fmt.Errorf("failed to load run state %s: %w", args[0], err)
 		}

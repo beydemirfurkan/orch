@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,8 @@ import (
 	"github.com/furkanbeydemir/orch/internal/models"
 	"github.com/furkanbeydemir/orch/internal/providers"
 	"github.com/furkanbeydemir/orch/internal/providers/openai"
+	"github.com/furkanbeydemir/orch/internal/session"
+	"github.com/furkanbeydemir/orch/internal/storage"
 )
 
 type interactiveModel struct {
@@ -40,7 +43,7 @@ type interactiveModel struct {
 	sessionID    string
 	resumed      bool
 	cwd          string
-	
+
 	showSuggestions bool
 	suggestions     []commandEntry
 	suggestionIdx   int
@@ -94,6 +97,7 @@ type commandEntry struct {
 var allCommands = []commandEntry{
 	{Name: "/agents", Desc: "Switch agent"},
 	{Name: "/auth", Desc: "Login/Logout from provider"},
+	{Name: "/connect", Desc: "Connect provider credentials"},
 	{Name: "/clear", Desc: "Clear chat history"},
 	{Name: "/exit", Desc: "Exit the app"},
 	{Name: "/help", Desc: "Show help messages"},
@@ -127,16 +131,16 @@ type theme struct {
 	noteCard    lipgloss.Style
 	errorCard   lipgloss.Style
 	footer      lipgloss.Style
-	
+
 	menuBox      lipgloss.Style
 	menuItem     lipgloss.Style
 	menuSelected lipgloss.Style
 	menuDesc     lipgloss.Style
 
-	modalBox     lipgloss.Style
-	modalTitle   lipgloss.Style
-	modalKey     lipgloss.Style
-	modalSearch  lipgloss.Style
+	modalBox    lipgloss.Style
+	modalTitle  lipgloss.Style
+	modalKey    lipgloss.Style
+	modalSearch lipgloss.Style
 }
 
 var dracula = theme{
@@ -234,7 +238,7 @@ func newInteractiveModel(resumeID string) *interactiveModel {
 	input := textarea.New()
 	input.Placeholder = "Ask Orch anything..."
 	input.Prompt = ""
-	
+
 	input.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	input.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B"))
 	input.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC"))
@@ -296,7 +300,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		footerHeight := 3
 		m.viewport.Width = msg.Width - 4
 		m.viewport.Height = max(5, msg.Height-headerHeight-inputHeight-footerHeight)
-		
+
 		contentWidth := max(40, min(80, m.viewport.Width))
 		m.input.SetWidth(contentWidth)
 		m.input.SetHeight(max(2, inputHeight-2))
@@ -420,7 +424,7 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeModal != nil {
 				active := m.activeModal
 				choice := active.Choices[active.Index]
-				
+
 				if active.Type == modalProvider {
 					// Move to auth step
 					methods, ok := authMethods[choice.ID]
@@ -442,13 +446,13 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					provider := active.Selected
 					method := choice.ID
 					m.activeModal = nil
-					
-					if method == "browser" {
-						m.input.SetValue(fmt.Sprintf("/auth %s login", provider))
+
+					if method == "browser" || method == "headless" {
+						m.input.SetValue(fmt.Sprintf("/auth login --provider %s --method account", provider))
 					} else if method == "api_key" {
-						m.input.SetValue(fmt.Sprintf("/auth %s key", provider))
+						m.input.SetValue(fmt.Sprintf("/auth login --provider %s --method api", provider))
 					} else {
-						m.input.SetValue(fmt.Sprintf("/auth %s %s", provider, method))
+						m.input.SetValue(fmt.Sprintf("/auth login --provider %s --method %s", provider, method))
 					}
 					return m.handleCommand()
 				}
@@ -525,7 +529,7 @@ func (m *interactiveModel) handleCommand() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if strings.HasPrefix(raw, "/provider") {
+	if strings.HasPrefix(raw, "/provider") || strings.HasPrefix(raw, "/connect") {
 		parts := strings.Fields(raw)
 		if len(parts) == 1 {
 			// Trigger interactive modal
@@ -615,7 +619,7 @@ func (m *interactiveModel) View() string {
 			providerState = "provider configured"
 		}
 		authState := "disconnected"
-		if strings.Contains(strings.ToLower(m.authLine), "connected") {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.authLine)), "auth: connected") {
 			authState = "auth configured"
 		}
 		modelSummary := shortModelsLine(m.modelsLine)
@@ -629,7 +633,7 @@ func (m *interactiveModel) View() string {
 		body := lipgloss.PlaceHorizontal(m.viewport.Width, lipgloss.Center, bodyContent)
 
 		composerContent := dracula.panel.Width(contentWidth).Render(m.input.View())
-		
+
 		var suggestionsView string
 		if m.showSuggestions {
 			var lines []string
@@ -680,7 +684,7 @@ func (m *interactiveModel) renderEmptyState(width, height int) string {
 		providerState = "provider configured"
 	}
 	authState := "disconnected"
-	if strings.Contains(strings.ToLower(m.authLine), "connected") {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(m.authLine)), "auth: connected") {
 		authState = "auth configured"
 	}
 
@@ -747,24 +751,24 @@ func (m *interactiveModel) renderModal(width, height int) string {
 	}
 
 	modalWidth := max(40, min(60, width-10))
-	
+
 	title := dracula.modalTitle.Render(modal.Title)
 	escLabel := dracula.modalKey.Render("esc")
-	
-	header := lipgloss.JoinHorizontal(lipgloss.Left, 
-		title, 
-		strings.Repeat(" ", max(0, modalWidth-lipgloss.Width(title)-lipgloss.Width(escLabel))), 
+
+	header := lipgloss.JoinHorizontal(lipgloss.Left,
+		title,
+		strings.Repeat(" ", max(0, modalWidth-lipgloss.Width(title)-lipgloss.Width(escLabel))),
 		escLabel)
 
 	search := "\n" + dracula.modalSearch.Render("S") + dracula.muted.Render("earch") + "\n"
-	
+
 	var lines []string
 	lines = append(lines, header, search)
-	
+
 	for i, choice := range modal.Choices {
 		text := choice.Text
 		sub := choice.Sub
-		
+
 		var line string
 		if i == modal.Index {
 			content := text
@@ -805,7 +809,7 @@ func (m *interactiveModel) appendUserMessage(command string) {
 
 func (m *interactiveModel) appendAssistantMessage(title string, lines []string) {
 	indicator := dracula.muted.Render("○ ")
-	
+
 	header := ""
 	if title == "Orch" || title == "Output" || title == "Commands" {
 		header = dracula.header.Render("Orch Output") + "\n"
@@ -847,9 +851,14 @@ func parseInteractiveInput(input string) ([]string, error) {
 			return []string{parts[0], strings.Join(parts[1:], " ")}, nil
 		case "diff", "apply", "init":
 			return []string{parts[0]}, nil
-		case "doctor", "provider", "model", "models", "auth":
+		case "doctor", "provider", "model", "models", "auth", "connect":
 			if parts[0] == "models" {
 				parts[0] = "model"
+			}
+			if parts[0] == "connect" {
+				parts[0] = "auth"
+				parts = append([]string{"auth", "login"}, parts[1:]...)
+				return parts, nil
 			}
 			return append([]string{parts[0]}, parts[1:]...), nil
 		case "logs":
@@ -911,6 +920,14 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 		return nil, err
 	}
 
+	sessionCtx, err := loadSessionContext(cwd)
+	if err != nil {
+		return nil, fmt.Errorf("session unavailable: %w", err)
+	}
+	defer sessionCtx.Store.Close()
+	svc := session.NewService(sessionCtx.Store)
+	compactionNote := ""
+
 	cfg, err := config.Load(cwd)
 	if err != nil {
 		return nil, fmt.Errorf("provider unavailable: failed to load config")
@@ -920,17 +937,44 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 		return nil, fmt.Errorf("provider unavailable: OpenAI provider is disabled or not selected")
 	}
 
-	providerLine, authLine, _ := readRuntimeStatus()
-	if strings.Contains(strings.ToLower(providerLine), "inactive") || strings.Contains(strings.ToLower(providerLine), "unknown") {
-		return nil, fmt.Errorf("provider unavailable: %s", providerLine)
+	status := runtimeStatusSnapshot()
+	if !status.providerConfigured {
+		return nil, fmt.Errorf("provider unavailable: %s", status.providerLine)
 	}
-	if strings.Contains(strings.ToLower(authLine), "disconnected") {
-		return nil, fmt.Errorf("provider unavailable: %s", authLine)
+	if !status.authConnected {
+		return nil, fmt.Errorf("provider unavailable: %s", status.authLine)
+	}
+
+	if compacted, note, compactErr := svc.MaybeCompact(sessionCtx.Session.ID, cfg.Provider.OpenAI.Models.Coder); compactErr == nil && compacted {
+		compactionNote = note
+	}
+
+	userMsg, err := svc.AppendText(session.MessageInput{
+		SessionID:  sessionCtx.Session.ID,
+		Role:       "user",
+		ProviderID: cfg.Provider.Default,
+		ModelID:    cfg.Provider.OpenAI.Models.Coder,
+		Text:       prompt,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("session write failed: %w", err)
 	}
 
 	client := openai.New(cfg.Provider.OpenAI)
 	client.SetTokenResolver(func(ctx context.Context) (string, error) {
 		_ = ctx
+		mode := strings.ToLower(strings.TrimSpace(cfg.Provider.OpenAI.AuthMode))
+		if mode == "api_key" {
+			cred, credErr := auth.Get(cwd, "openai")
+			if credErr != nil || cred == nil {
+				return "", credErr
+			}
+			if strings.ToLower(strings.TrimSpace(cred.Type)) == "api" {
+				return strings.TrimSpace(cred.Key), nil
+			}
+			return "", nil
+		}
+
 		state, loadErr := auth.Load(cwd)
 		if loadErr != nil || state == nil {
 			return "", loadErr
@@ -948,13 +992,65 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 		UserPrompt:   prompt,
 	})
 	if chatErr != nil {
+		errorPayload, _ := json.Marshal(map[string]string{"message": chatErr.Error()})
+		_, _ = svc.AppendMessage(session.MessageInput{
+			SessionID:    sessionCtx.Session.ID,
+			Role:         "assistant",
+			ParentID:     userMsg.Message.ID,
+			ProviderID:   cfg.Provider.Default,
+			ModelID:      cfg.Provider.OpenAI.Models.Coder,
+			FinishReason: "error",
+			Error:        chatErr.Error(),
+		}, []storage.SessionPart{{Type: "error", Payload: string(errorPayload)}})
 		return nil, fmt.Errorf("provider chat failed: %w", chatErr)
 	}
 	if strings.TrimSpace(resp.Text) == "" {
+		errorPayload, _ := json.Marshal(map[string]string{"message": "provider returned an empty response"})
+		_, _ = svc.AppendMessage(session.MessageInput{
+			SessionID:    sessionCtx.Session.ID,
+			Role:         "assistant",
+			ParentID:     userMsg.Message.ID,
+			ProviderID:   cfg.Provider.Default,
+			ModelID:      cfg.Provider.OpenAI.Models.Coder,
+			FinishReason: "error",
+			Error:        "provider returned an empty response",
+		}, []storage.SessionPart{{Type: "error", Payload: string(errorPayload)}})
 		return nil, fmt.Errorf("provider returned an empty response")
 	}
 
-	return &chatExecutionResult{Text: strings.TrimSpace(resp.Text)}, nil
+	assistantMsg, appendErr := svc.AppendText(session.MessageInput{
+		SessionID:    sessionCtx.Session.ID,
+		Role:         "assistant",
+		ParentID:     userMsg.Message.ID,
+		ProviderID:   cfg.Provider.Default,
+		ModelID:      cfg.Provider.OpenAI.Models.Coder,
+		FinishReason: "stop",
+		Text:         strings.TrimSpace(resp.Text),
+	})
+	warning := ""
+	if appendErr != nil {
+		warning = fmt.Sprintf("session write warning: %v", appendErr)
+	}
+	if strings.TrimSpace(compactionNote) != "" {
+		if warning == "" {
+			warning = compactionNote
+		} else {
+			warning = warning + "; " + compactionNote
+		}
+	}
+	if appendErr == nil {
+		turnCount := 1
+		if metrics, metricsErr := sessionCtx.Store.GetSessionMetrics(sessionCtx.Session.ID); metricsErr == nil && metrics != nil {
+			turnCount = metrics.TurnCount + 1
+		}
+		_ = sessionCtx.Store.UpsertSessionMetrics(storage.SessionMetrics{
+			SessionID:     sessionCtx.Session.ID,
+			TurnCount:     turnCount,
+			LastMessageID: assistantMsg.Message.ID,
+		})
+	}
+
+	return &chatExecutionResult{Text: strings.TrimSpace(resp.Text), Warning: warning}, nil
 }
 
 func helpText() string {
@@ -968,11 +1064,12 @@ func helpText() string {
 		"  /apply                 Apply latest patch (dry-run by default)",
 		"  /doctor                Validate provider/runtime readiness",
 		"  /provider              Show provider configuration",
+		"  /connect               Open provider auth flow",
 		"  /provider set openai   Set default provider",
 		"  /auth status            Show authentication status",
-		"  /auth login --mode account --token <token>  Save account token",
-		"  /auth login --mode api_key  Use API key mode",
-		"  /auth logout            Remove stored account token",
+		"  /auth login [provider] --method account|api",
+		"  /auth list              List stored credentials",
+		"  /auth logout [provider] Remove stored credential",
 		"  /model                 Show role model mapping",
 		"  /models                Alias for /model",
 		"  /model set <role> <model>  Set role model",
@@ -1213,53 +1310,62 @@ func shortModelsLine(modelsLine string) string {
 	return fmt.Sprintf("models p:%s c:%s r:%s", planner, coder, reviewer)
 }
 
-func readRuntimeStatus() (providerLine, authLine, modelsLine string) {
-	providerLine = "Provider: unknown"
-	authLine = "Auth: disconnected"
-	modelsLine = "Models: planner=- coder=- reviewer=-"
+type runtimeStatus struct {
+	providerLine       string
+	authLine           string
+	modelsLine         string
+	providerConfigured bool
+	authConnected      bool
+}
+
+func runtimeStatusSnapshot() runtimeStatus {
+	status := runtimeStatus{
+		providerLine:       "Provider: unknown",
+		authLine:           "Auth: disconnected",
+		modelsLine:         "Models: planner=- coder=- reviewer=-",
+		providerConfigured: false,
+		authConnected:      false,
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return providerLine, authLine, modelsLine
+		return status
+	}
+
+	providerState, err := providers.ReadState(cwd)
+	if err != nil {
+		return status
 	}
 
 	cfg, err := config.Load(cwd)
 	if err != nil {
-		return providerLine, authLine, modelsLine
+		return status
 	}
 
-	providerLine = fmt.Sprintf("Provider: %s", cfg.Provider.Default)
-	modelsLine = fmt.Sprintf("Models: planner=%s coder=%s reviewer=%s", cfg.Provider.OpenAI.Models.Planner, cfg.Provider.OpenAI.Models.Coder, cfg.Provider.OpenAI.Models.Reviewer)
-
-	authMode := strings.ToLower(strings.TrimSpace(cfg.Provider.OpenAI.AuthMode))
-	if authMode == "" {
-		authMode = "api_key"
-	}
-
-	switch authMode {
-	case "api_key":
-		connected := strings.TrimSpace(os.Getenv(cfg.Provider.OpenAI.APIKeyEnv)) != ""
-		if connected {
-			authLine = "Auth: connected (api_key)"
+	status.providerLine = fmt.Sprintf("Provider: %s", cfg.Provider.Default)
+	status.modelsLine = fmt.Sprintf("Models: planner=%s coder=%s reviewer=%s", cfg.Provider.OpenAI.Models.Planner, cfg.Provider.OpenAI.Models.Coder, cfg.Provider.OpenAI.Models.Reviewer)
+	status.providerConfigured = cfg.Provider.Flags.OpenAIEnabled && strings.ToLower(strings.TrimSpace(cfg.Provider.Default)) == "openai"
+	status.authConnected = providerState.OpenAI.Connected
+	if providerState.OpenAI.Connected {
+		status.authLine = fmt.Sprintf("Auth: connected (%s %s)", providerState.OpenAI.Mode, providerState.OpenAI.Source)
+	} else {
+		mode := providerState.OpenAI.Mode
+		if mode == "" {
+			mode = "unknown"
+		}
+		if strings.TrimSpace(providerState.OpenAI.Reason) != "" {
+			status.authLine = fmt.Sprintf("Auth: disconnected (%s) - %s", mode, providerState.OpenAI.Reason)
 		} else {
-			authLine = "Auth: disconnected (api_key)"
+			status.authLine = fmt.Sprintf("Auth: disconnected (%s)", mode)
 		}
-	case "account":
-		if strings.TrimSpace(os.Getenv(cfg.Provider.OpenAI.AccountTokenEnv)) != "" {
-			authLine = "Auth: connected (account env)"
-			break
-		}
-		state, loadErr := auth.Load(cwd)
-		if loadErr == nil && state != nil && strings.TrimSpace(state.AccessToken) != "" {
-			authLine = "Auth: connected (account local)"
-		} else {
-			authLine = "Auth: disconnected (account)"
-		}
-	default:
-		authLine = fmt.Sprintf("Auth: invalid mode (%s)", authMode)
 	}
 
-	return providerLine, authLine, modelsLine
+	return status
+}
+
+func readRuntimeStatus() (providerLine, authLine, modelsLine string) {
+	status := runtimeStatusSnapshot()
+	return status.providerLine, status.authLine, status.modelsLine
 }
 
 func generateSessionID() string {

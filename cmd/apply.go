@@ -8,7 +8,6 @@ import (
 
 	"github.com/furkanbeydemir/orch/internal/config"
 	"github.com/furkanbeydemir/orch/internal/patch"
-	"github.com/furkanbeydemir/orch/internal/runstore"
 	"github.com/spf13/cobra"
 )
 
@@ -43,7 +42,13 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to load configuration: %w", err)
 	}
 
-	rawDiff, err := runstore.LoadLatestPatch(cwd)
+	ctx, err := loadSessionContext(cwd)
+	if err != nil {
+		return err
+	}
+	defer ctx.Store.Close()
+
+	rawDiff, err := ctx.Store.LoadLatestPatchBySession(ctx.Session.ID)
 	if err != nil {
 		fmt.Println("No patch available to apply yet.")
 		fmt.Println("Run 'orch run <task>' first.")

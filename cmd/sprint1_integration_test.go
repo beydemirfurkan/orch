@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/furkanbeydemir/orch/internal/config"
+	"github.com/furkanbeydemir/orch/internal/models"
+	"github.com/furkanbeydemir/orch/internal/storage"
 )
 
 func TestRunBlockedByRepoLock(t *testing.T) {
@@ -64,9 +66,40 @@ func TestApplyRequiresDestructiveApproval(t *testing.T) {
 		"+world",
 		"",
 	}, "\n")
-	patchPath := filepath.Join(repoRoot, config.OrchDir, "latest.patch")
-	if err := os.WriteFile(patchPath, []byte(patchContent), 0o644); err != nil {
-		t.Fatalf("write latest patch: %v", err)
+	store, err := storage.Open(repoRoot)
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer store.Close()
+
+	projectID, err := store.GetOrCreateProject()
+	if err != nil {
+		t.Fatalf("get project id: %v", err)
+	}
+	sess, err := store.EnsureDefaultSession(projectID)
+	if err != nil {
+		t.Fatalf("ensure default session: %v", err)
+	}
+
+	err = store.SaveRunState(&models.RunState{
+		ID:        "run-test-apply",
+		ProjectID: projectID,
+		SessionID: sess.ID,
+		Task: models.Task{
+			ID:          "task-apply",
+			Description: "apply test task",
+			CreatedAt:   time.Now(),
+		},
+		Status: models.StatusCompleted,
+		Patch: &models.Patch{
+			TaskID:  "task-apply",
+			RawDiff: patchContent,
+		},
+		Retries:   models.RetryState{},
+		StartedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("save run state: %v", err)
 	}
 
 	forceApply = true
@@ -76,7 +109,7 @@ func TestApplyRequiresDestructiveApproval(t *testing.T) {
 		approveDestructive = false
 	})
 
-	err := runApply(nil, nil)
+	err = runApply(nil, nil)
 	if err == nil {
 		t.Fatalf("expected destructive apply to be blocked")
 	}

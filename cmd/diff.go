@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/furkanbeydemir/orch/internal/patch"
-	"github.com/furkanbeydemir/orch/internal/runstore"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +27,13 @@ func runDiff(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	rawDiff, err := runstore.LoadLatestPatch(cwd)
+	ctx, err := loadSessionContext(cwd)
+	if err != nil {
+		return err
+	}
+	defer ctx.Store.Close()
+
+	rawDiff, err := ctx.Store.LoadLatestPatchBySession(ctx.Session.ID)
 	if err != nil {
 		fmt.Println("📄 Latest generated patch:")
 		fmt.Println("─────────────────────────────────────")
