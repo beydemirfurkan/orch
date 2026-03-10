@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -52,5 +53,39 @@ func TestDoctorFailsWithoutAPIKey(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "doctor failed") {
 		t.Fatalf("unexpected doctor error: %v", err)
+	}
+}
+
+func TestProviderListJSONOutput(t *testing.T) {
+	repoRoot := t.TempDir()
+	t.Chdir(repoRoot)
+
+	if err := config.EnsureOrchDir(repoRoot); err != nil {
+		t.Fatalf("ensure orch dir: %v", err)
+	}
+	if err := config.Save(repoRoot, config.DefaultConfig()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	providerJSONFlag = true
+	defer func() { providerJSONFlag = false }()
+
+	out := captureStdout(t, func() {
+		if err := runProviderList(nil, nil); err != nil {
+			t.Fatalf("provider list: %v", err)
+		}
+	})
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("invalid json output: %v\noutput=%s", err, out)
+	}
+
+	all, ok := payload["all"].([]any)
+	if !ok || len(all) == 0 {
+		t.Fatalf("expected non-empty all providers, got: %#v", payload["all"])
+	}
+	if all[0] != "openai" {
+		t.Fatalf("expected openai in all providers, got: %#v", all)
 	}
 }

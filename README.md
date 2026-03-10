@@ -240,13 +240,13 @@ API key mode:
 
 ```bash
 export OPENAI_API_KEY="your_api_key"
-./orch auth login --mode api_key
+./orch auth login openai --method api
 ```
 
 Or account-token mode:
 
 ```bash
-./orch auth login --mode account --token "your_account_token"
+./orch auth login openai --method account --token "your_account_token"
 ```
 
 Validate runtime readiness:
@@ -358,11 +358,14 @@ Useful interactive commands:
 ### Provider and auth
 
 ```bash
-./orch auth login --mode api_key
-./orch auth login --mode account --token "..."
+./orch auth login openai --method api
+./orch auth login openai --method account --token "..."
+./orch auth list
 ./orch auth status
-./orch auth logout
+./orch auth logout openai
 ./orch provider
+./orch provider list
+./orch provider list --json
 ./orch provider set openai
 ./orch model
 ./orch model set coder gpt-5.3-codex

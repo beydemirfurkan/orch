@@ -345,8 +345,15 @@ func (c *Client) resolveAuthToken(ctx context.Context) (string, error) {
 	switch mode {
 	case "api_key":
 		key := strings.TrimSpace(os.Getenv(c.cfg.APIKeyEnv))
+		if key == "" && c.resolveToken != nil {
+			resolved, err := c.resolveToken(ctx)
+			if err != nil {
+				return "", &providers.Error{Code: providers.ErrAuthError, Message: "failed to resolve api key from local auth state", Cause: err}
+			}
+			key = strings.TrimSpace(resolved)
+		}
 		if key == "" {
-			return "", &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("missing API key in env var %s", c.cfg.APIKeyEnv)}
+			return "", &providers.Error{Code: providers.ErrAuthError, Message: fmt.Sprintf("missing API key in env var %s and local auth state", c.cfg.APIKeyEnv)}
 		}
 		return key, nil
 	case "account":

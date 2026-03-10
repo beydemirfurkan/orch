@@ -19,8 +19,11 @@ func TestAuthLoginAccountAndLogout(t *testing.T) {
 	}
 
 	authModeFlag = "account"
+	authMethodFlag = ""
+	authProviderFlag = "openai"
 	authTokenFlag = "token-123"
 	authEmailFlag = "user@example.com"
+	authAPIKeyFlag = ""
 	if err := runAuthLogin(nil, nil); err != nil {
 		t.Fatalf("auth login account: %v", err)
 	}
@@ -56,9 +59,12 @@ func TestAuthLoginAPIKeyMode(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	authModeFlag = "api_key"
+	authModeFlag = ""
+	authMethodFlag = "api"
+	authProviderFlag = "openai"
 	authTokenFlag = ""
 	authEmailFlag = ""
+	authAPIKeyFlag = "sk-test"
 	if err := runAuthLogin(nil, nil); err != nil {
 		t.Fatalf("auth login api_key: %v", err)
 	}

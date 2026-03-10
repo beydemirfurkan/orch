@@ -66,13 +66,18 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 	state, loadErr := auth.Load(cwd)
 	storedAccount := state != nil && strings.TrimSpace(state.AccessToken) != ""
+	storedCred, credErr := auth.Get(cwd, "openai")
+	storedAPIKey := credErr == nil && storedCred != nil && storedCred.Type == "api" && strings.TrimSpace(storedCred.Key) != ""
+	if credErr != nil {
+		checks = append(checks, check{name: "openai.stored_credential", ok: false, detail: credErr.Error()})
+	}
 	if loadErr != nil {
 		checks = append(checks, check{name: "openai.account_state", ok: false, detail: loadErr.Error()})
 	}
 
 	checks = append(checks, check{
 		name:   "openai.api_key",
-		ok:     key != "" || authMode == "account",
+		ok:     key != "" || storedAPIKey || authMode == "account",
 		detail: fmt.Sprintf("env=%s", cfg.Provider.OpenAI.APIKeyEnv),
 	})
 
@@ -90,6 +95,12 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		client := openai.New(cfg.Provider.OpenAI)
 		client.SetTokenResolver(func(ctx context.Context) (string, error) {
 			_ = ctx
+			if authMode == "api_key" {
+				if storedCred != nil && strings.TrimSpace(storedCred.Key) != "" {
+					return strings.TrimSpace(storedCred.Key), nil
+				}
+				return "", nil
+			}
 			if state == nil {
 				return "", nil
 			}
