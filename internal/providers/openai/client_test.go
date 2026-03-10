@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,17 @@ import (
 type sequenceDoer struct {
 	responses []*http.Response
 	index     int
+}
+
+type inspectDoer struct {
+	fn func(req *http.Request) (*http.Response, error)
+}
+
+func (d *inspectDoer) Do(req *http.Request) (*http.Response, error) {
+	if d.fn == nil {
+		return nil, fmt.Errorf("no inspect fn configured")
+	}
+	return d.fn(req)
 }
 
 func (d *sequenceDoer) Do(req *http.Request) (*http.Response, error) {
@@ -100,6 +112,70 @@ func TestResolveAuthTokenAccountModeWithResolver(t *testing.T) {
 	if token != "account-token" {
 		t.Fatalf("unexpected token: %s", token)
 	}
+}
+
+func TestChatAccountModeUsesCodexEndpointAndAccountHeader(t *testing.T) {
+	client := New(config.OpenAIProviderConfig{
+		AuthMode:        "account",
+		BaseURL:         "https://api.openai.com/v1",
+		AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
+		Models: config.ProviderRoleModels{
+			Coder: "gpt-5.3-codex",
+		},
+	})
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		return testAccountToken("acc-123"), nil
+	})
+
+	doer := &inspectDoer{fn: func(req *http.Request) (*http.Response, error) {
+		if got := req.URL.String(); got != "https://chatgpt.com/backend-api/codex/responses" {
+			return nil, fmt.Errorf("unexpected request url: %s", got)
+		}
+		if got := req.Header.Get("ChatGPT-Account-Id"); got != "acc-123" {
+			return nil, fmt.Errorf("unexpected account header: %s", got)
+		}
+		if got := req.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
+			return nil, fmt.Errorf("missing auth header")
+		}
+		return response(http.StatusOK, `{"output_text":"done","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), nil
+	}}
+
+	out, err := client.chatWithDoer(context.Background(), providers.ChatRequest{Role: providers.RoleCoder}, doer)
+	if err != nil {
+		t.Fatalf("chat error: %v", err)
+	}
+	if strings.TrimSpace(out.Text) != "done" {
+		t.Fatalf("unexpected text: %q", out.Text)
+	}
+}
+
+func TestValidateAccountModeRejectsNonJWTToken(t *testing.T) {
+	client := New(config.OpenAIProviderConfig{
+		AuthMode:        "account",
+		AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
+	})
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		return "not-a-jwt", nil
+	})
+
+	err := client.Validate(context.Background())
+	if err == nil {
+		t.Fatalf("expected validate error")
+	}
+	perr, ok := err.(*providers.Error)
+	if !ok {
+		t.Fatalf("expected provider error type")
+	}
+	if perr.Code != providers.ErrAuthError {
+		t.Fatalf("unexpected error code: %s", perr.Code)
+	}
+}
+
+func testAccountToken(accountID string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := fmt.Sprintf(`{"https://api.openai.com/auth":{"chatgpt_account_id":"%s"}}`, accountID)
+	body := base64.RawURLEncoding.EncodeToString([]byte(payload))
+	return header + "." + body + ".sig"
 }
 
 func response(status int, body string) *http.Response {

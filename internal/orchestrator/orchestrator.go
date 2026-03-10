@@ -88,8 +88,11 @@ func (o *Orchestrator) attachProviderRuntime() {
 	if !o.cfg.Provider.Flags.OpenAIEnabled {
 		return
 	}
-	if strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.APIKeyEnv)) == "" {
-		if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) != "account" {
+	mode := strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode))
+	hasEnvAPIKey := strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.APIKeyEnv)) != ""
+	if mode == "api_key" && !hasEnvAPIKey {
+		cred, err := auth.Get(o.repoRoot, "openai")
+		if err != nil || cred == nil || strings.ToLower(strings.TrimSpace(cred.Type)) != "api" || strings.TrimSpace(cred.Key) == "" {
 			return
 		}
 	}
@@ -98,11 +101,17 @@ func (o *Orchestrator) attachProviderRuntime() {
 	client := openai.New(o.cfg.Provider.OpenAI)
 	client.SetTokenResolver(func(ctx context.Context) (string, error) {
 		_ = ctx
-		state, err := auth.Load(o.repoRoot)
-		if err != nil || state == nil {
-			return "", err
+		if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "api_key" {
+			cred, err := auth.Get(o.repoRoot, "openai")
+			if err != nil || cred == nil {
+				return "", err
+			}
+			if strings.ToLower(strings.TrimSpace(cred.Type)) == "api" {
+				return strings.TrimSpace(cred.Key), nil
+			}
+			return "", nil
 		}
-		return state.AccessToken, nil
+		return auth.ResolveAccountAccessToken(o.repoRoot, "openai")
 	})
 	registry.Register(client)
 	router := providers.NewRouter(o.cfg, registry)

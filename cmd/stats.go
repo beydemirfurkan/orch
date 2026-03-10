@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/furkanbeydemir/orch/internal/models"
-	"github.com/furkanbeydemir/orch/internal/runstore"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +30,13 @@ func runStats(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	states, err := runstore.ListRunStates(cwd, statsLimit)
+	ctx, err := loadSessionContext(cwd)
+	if err != nil {
+		return err
+	}
+	defer ctx.Store.Close()
+
+	states, err := ctx.Store.ListRunStatesByProject(ctx.ProjectID, statsLimit)
 	if err != nil {
 		return fmt.Errorf("failed to load run states: %w", err)
 	}
