@@ -45,7 +45,7 @@ function main() {
 
 async function install() {
   const assetName = resolveAssetName();
-  const baseUrl = process.env.ORCH_BINARY_BASE_URL || `https://github.com/furkanbeydemir/orch/releases/download/v${pkg.version}`;
+  const baseUrl = process.env.ORCH_BINARY_BASE_URL || `https://github.com/beydemirfurkan/orch/releases/download/v${pkg.version}`;
   const assetUrl = `${baseUrl}/${assetName}`;
 
   try {

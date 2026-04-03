@@ -247,6 +247,9 @@ go run . <command>
 
 `npm i -g orch-code` becomes zero-Go for end users once GitHub Releases and npm publish are both live.
 
+Canonical GitHub repo:
+- `https://github.com/beydemirfurkan/orch`
+
 Repo automation now expects:
 - GitHub Actions secret: `NPM_TOKEN`
 - a git tag in the form `vX.Y.Z`
@@ -276,7 +279,13 @@ The release workflow will:
 - verify the tag matches package metadata
 - build darwin/linux/windows binaries with GoReleaser
 - publish a GitHub Release with raw binary assets
-- publish the npm package
+- publish the npm package if that version is not already on npm
+- run clean install smoke tests on macOS and Linux using `npm install -g orch-code`
+
+Recommended publish path:
+- treat tag push as the canonical release path
+- avoid manual `npm publish` during normal releases
+- keep manual npm publish only as a recovery path if CI is unavailable
 
 `release:prepare` updates these files together:
 - `package.json`
