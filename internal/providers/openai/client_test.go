@@ -201,8 +201,28 @@ func TestChatAccountModeUsesCodexEndpointAccountHeaderAndInstructions(t *testing
 		if got := payload["instructions"]; got != "You are a constrained coding agent." {
 			return nil, fmt.Errorf("unexpected instructions: %#v", got)
 		}
-		if got := payload["input"]; got != "Return a diff." {
-			return nil, fmt.Errorf("unexpected input: %#v", got)
+		input, ok := payload["input"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("expected account mode input list, got %#v", payload["input"])
+		}
+		if len(input) != 1 {
+			return nil, fmt.Errorf("expected single input item, got %d", len(input))
+		}
+		message, ok := input[0].(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("expected input item object, got %#v", input[0])
+		}
+		if got := message["type"]; got != "message" {
+			return nil, fmt.Errorf("unexpected input item type: %#v", got)
+		}
+		if got := message["role"]; got != "user" {
+			return nil, fmt.Errorf("unexpected input item role: %#v", got)
+		}
+		if got := message["content"]; got != "Return a diff." {
+			return nil, fmt.Errorf("unexpected input content: %#v", got)
+		}
+		if got := payload["store"]; got != false {
+			return nil, fmt.Errorf("unexpected store flag: %#v", got)
 		}
 		return response(http.StatusOK, `{"output_text":"done","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), nil
 	}}

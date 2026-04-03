@@ -163,7 +163,16 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 
 	payload := map[string]any{
 		"model": model,
-		"input": req.UserPrompt,
+	}
+	if mode == "account" {
+		payload["input"] = []map[string]any{{
+			"type":    "message",
+			"role":    "user",
+			"content": req.UserPrompt,
+		}}
+		payload["store"] = false
+	} else {
+		payload["input"] = req.UserPrompt
 	}
 	if strings.TrimSpace(req.SystemPrompt) != "" {
 		payload["instructions"] = req.SystemPrompt
