@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.1.3 - 2026-04-03
+
+- ci: harden npm install and release flow
 ## v0.1.2 - 2026-04-03
 
 - fix: send instructions for OpenAI account chat
