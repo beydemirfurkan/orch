@@ -20,7 +20,44 @@ type Config struct {
 	Commands CommandConfig  `json:"commands"`
 	Patch    PatchConfig    `json:"patch"`
 	Safety   SafetyConfig   `json:"safety"`
+	Budget   BudgetConfig   `json:"budget"`
 	Provider ProviderConfig `json:"provider"`
+	Skills   SkillsConfig   `json:"skills,omitempty"`
+	MCP      MCPConfig      `json:"mcp,omitempty"`
+}
+
+// SkillsConfig controls which skills are enabled globally or per agent.
+type SkillsConfig struct {
+	// GlobalSkills are enabled for all agents.
+	GlobalSkills []string `json:"globalSkills,omitempty"`
+	// AgentSkills maps agent names to their additional skill list.
+	AgentSkills map[string][]string `json:"agentSkills,omitempty"`
+}
+
+// MCPConfig lists external MCP server definitions.
+type MCPConfig struct {
+	Servers []MCPServerConfig `json:"servers,omitempty"`
+}
+
+// MCPServerConfig describes a single MCP server.
+type MCPServerConfig struct {
+	// Name is used as the tool name prefix (e.g. "context7" → tool "context7_query").
+	Name string `json:"name"`
+	// Command is a stdio command (e.g. "npx -y @upstash/context7-mcp").
+	Command string `json:"command,omitempty"`
+	// URL is an HTTP endpoint for HTTP-based MCP servers.
+	URL string `json:"url,omitempty"`
+	// Env holds additional environment variables for stdio servers.
+	Env map[string]string `json:"env,omitempty"`
+	// Skills lists which skill names this server's tools satisfy.
+	Skills []string `json:"skills,omitempty"`
+}
+
+type BudgetConfig struct {
+	PlannerMaxTokens  int `json:"plannerMaxTokens"`
+	CoderMaxTokens    int `json:"coderMaxTokens"`
+	ReviewerMaxTokens int `json:"reviewerMaxTokens"`
+	FixerMaxTokens    int `json:"fixerMaxTokens"`
 }
 
 type ModelConfig struct {
@@ -65,12 +102,35 @@ type SafetyFeatureFlags struct {
 	RetryLimits            bool `json:"retryLimits"`
 	PatchConflictReporting bool `json:"patchConflictReporting"`
 	ConfidenceEnforcement  bool `json:"confidenceEnforcement"`
+	// Pantheon agent flags — all disabled by default to preserve existing behaviour.
+	ExplorerEnabled bool `json:"explorerEnabled"`
+	OracleEnabled   bool `json:"oracleEnabled"`
+	FixerEnabled    bool `json:"fixerEnabled"`
 }
 
 type ProviderConfig struct {
-	Default string               `json:"default"`
-	OpenAI  OpenAIProviderConfig `json:"openai"`
-	Flags   ProviderFeatureFlags `json:"flags"`
+	Default   string                  `json:"default"`
+	OpenAI    OpenAIProviderConfig    `json:"openai"`
+	Anthropic AnthropicProviderConfig `json:"anthropic,omitempty"`
+	Ollama    OllamaProviderConfig    `json:"ollama,omitempty"`
+	Flags     ProviderFeatureFlags    `json:"flags"`
+	// RoleAssignments maps role names to "providerName:modelID" strings.
+	// When set, takes precedence over the per-provider Models config.
+	// Example: {"planner": "anthropic:claude-opus-4-5", "coder": "openai:o3"}
+	RoleAssignments map[string]string `json:"roleAssignments,omitempty"`
+}
+
+type AnthropicProviderConfig struct {
+	APIKeyEnv      string `json:"apiKeyEnv"`
+	BaseURL        string `json:"baseURL"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+	MaxRetries     int    `json:"maxRetries"`
+}
+
+type OllamaProviderConfig struct {
+	BaseURL        string `json:"baseURL"`
+	TimeoutSeconds int    `json:"timeoutSeconds"`
+	Enabled        bool   `json:"enabled"`
 }
 
 type OpenAIProviderConfig struct {
@@ -88,6 +148,9 @@ type ProviderRoleModels struct {
 	Planner  string `json:"planner"`
 	Coder    string `json:"coder"`
 	Reviewer string `json:"reviewer"`
+	Explorer string `json:"explorer,omitempty"`
+	Oracle   string `json:"oracle,omitempty"`
+	Fixer    string `json:"fixer,omitempty"`
 }
 
 type ProviderFeatureFlags struct {
@@ -109,6 +172,12 @@ func DefaultConfig() *Config {
 		Patch: PatchConfig{
 			MaxFiles: 10,
 			MaxLines: 800,
+		},
+		Budget: BudgetConfig{
+			PlannerMaxTokens:  4096,
+			CoderMaxTokens:    8192,
+			ReviewerMaxTokens: 2048,
+			FixerMaxTokens:    4096,
 		},
 		Safety: SafetyConfig{
 			DryRun:                     true,
@@ -133,6 +202,17 @@ func DefaultConfig() *Config {
 		},
 		Provider: ProviderConfig{
 			Default: "openai",
+			Anthropic: AnthropicProviderConfig{
+				APIKeyEnv:      "ANTHROPIC_API_KEY",
+				BaseURL:        "https://api.anthropic.com/v1",
+				TimeoutSeconds: 120,
+				MaxRetries:     3,
+			},
+			Ollama: OllamaProviderConfig{
+				BaseURL:        "http://localhost:11434",
+				TimeoutSeconds: 180,
+				Enabled:        false,
+			},
 			OpenAI: OpenAIProviderConfig{
 				APIKeyEnv:       "OPENAI_API_KEY",
 				AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
@@ -175,6 +255,19 @@ func Load(repoRoot string) (*Config, error) {
 func applyDefaults(cfg *Config, rawJSON []byte) {
 	defaults := DefaultConfig()
 	presence := parsePresence(rawJSON)
+
+	if cfg.Budget.PlannerMaxTokens <= 0 {
+		cfg.Budget.PlannerMaxTokens = defaults.Budget.PlannerMaxTokens
+	}
+	if cfg.Budget.CoderMaxTokens <= 0 {
+		cfg.Budget.CoderMaxTokens = defaults.Budget.CoderMaxTokens
+	}
+	if cfg.Budget.ReviewerMaxTokens <= 0 {
+		cfg.Budget.ReviewerMaxTokens = defaults.Budget.ReviewerMaxTokens
+	}
+	if cfg.Budget.FixerMaxTokens <= 0 {
+		cfg.Budget.FixerMaxTokens = defaults.Budget.FixerMaxTokens
+	}
 
 	if cfg.Safety.LockStaleAfterSeconds <= 0 {
 		cfg.Safety.LockStaleAfterSeconds = defaults.Safety.LockStaleAfterSeconds

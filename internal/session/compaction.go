@@ -32,6 +32,15 @@ func ResolveBudget(modelID string) TokenBudget {
 		return TokenBudget{ContextLimit: 200000, ReservedOutput: 16000, SafetyMargin: 0.12}
 	case strings.Contains(model, "gpt-4"):
 		return TokenBudget{ContextLimit: 128000, ReservedOutput: 12000, SafetyMargin: 0.15}
+	// Anthropic Claude models
+	case strings.Contains(model, "claude-opus-4") || strings.Contains(model, "claude-opus"):
+		return TokenBudget{ContextLimit: 200000, ReservedOutput: 16000, SafetyMargin: 0.12}
+	case strings.Contains(model, "claude-sonnet-4") || strings.Contains(model, "claude-sonnet"):
+		return TokenBudget{ContextLimit: 200000, ReservedOutput: 16000, SafetyMargin: 0.12}
+	case strings.Contains(model, "claude-haiku"):
+		return TokenBudget{ContextLimit: 200000, ReservedOutput: 8000, SafetyMargin: 0.15}
+	case strings.Contains(model, "claude"):
+		return TokenBudget{ContextLimit: 200000, ReservedOutput: 16000, SafetyMargin: 0.12}
 	default:
 		return TokenBudget{ContextLimit: 64000, ReservedOutput: 8000, SafetyMargin: 0.18}
 	}
@@ -65,6 +74,10 @@ func resolveTokenProfile(modelID string) modelTokenProfile {
 	}
 	if strings.Contains(model, "gpt-4") {
 		base.CharPerToken = 3.9
+		base.BaseOverhead = 10
+	}
+	if strings.Contains(model, "claude") {
+		base.CharPerToken = 3.5
 		base.BaseOverhead = 10
 	}
 	return base

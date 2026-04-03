@@ -39,10 +39,15 @@ func (c *Coder) Execute(input *Input) (*Output, error) {
 	}
 
 	if c.runtime != nil {
+		systemPrompt := "You are a constrained coding agent. Return a unified diff patch only, keep scope minimal, and obey the execution contract."
+		if input.SkillHints != "" {
+			systemPrompt += "\n\n" + input.SkillHints
+		}
 		response, err := c.runtime.Chat(context.Background(), providers.ChatRequest{
 			Role:         providers.RoleCoder,
-			SystemPrompt: "You are a constrained coding agent. Return a unified diff patch only, keep scope minimal, and obey the execution contract.",
+			SystemPrompt: systemPrompt,
 			UserPrompt:   buildCoderPrompt(input),
+			MaxTokens:    input.MaxTokens,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("coder provider call failed: %w", err)
@@ -50,7 +55,7 @@ func (c *Coder) Execute(input *Input) (*Output, error) {
 
 		raw := extractUnifiedDiff(response.Text)
 		patch := &models.Patch{TaskID: input.Task.ID, Files: []models.PatchFile{}, RawDiff: raw}
-		return &Output{Patch: patch}, nil
+		return &Output{Patch: patch, Usage: response.Usage}, nil
 	}
 
 	patch := &models.Patch{
@@ -119,10 +124,18 @@ func buildCoderPrompt(input *Input) string {
 			b.WriteString(fmt.Sprintf("\nPatch Budget: max_files=%d max_changed_lines=%d", input.ExecutionContract.PatchBudget.MaxFiles, input.ExecutionContract.PatchBudget.MaxChangedLines))
 		}
 	}
-	if input.Context != nil {
-		if len(input.Context.RelatedTests) > 0 {
+	if input.Context != nil && len(input.Context.RelatedTests) > 0 {
+		// Build set of base names from FilesToModify for filtering
+		allowedBases := make(map[string]struct{})
+		if input.Plan != nil {
+			for _, f := range input.Plan.FilesToModify {
+				allowedBases[baseNameNoExt(f)] = struct{}{}
+			}
+		}
+		filtered := filterByBasename(input.Context.RelatedTests, allowedBases)
+		if len(filtered) > 0 {
 			b.WriteString("\nRelated Tests: ")
-			b.WriteString(strings.Join(input.Context.RelatedTests, ", "))
+			b.WriteString(strings.Join(filtered, ", "))
 		}
 	}
 	if input.RetryDirective != nil {

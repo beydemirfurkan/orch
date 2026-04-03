@@ -8,6 +8,9 @@ const (
 	RolePlanner  Role = "planner"
 	RoleCoder    Role = "coder"
 	RoleReviewer Role = "reviewer"
+	RoleExplorer Role = "explorer"
+	RoleOracle   Role = "oracle"
+	RoleFixer    Role = "fixer"
 )
 
 type ChatRequest struct {

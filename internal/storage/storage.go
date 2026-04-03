@@ -372,6 +372,7 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 	testFailuresJSON, _ := json.Marshal(state.TestFailures)
 	retriesJSON, _ := json.Marshal(state.Retries)
 	unresolvedJSON, _ := json.Marshal(state.UnresolvedFailures)
+	tokenUsagesJSON, _ := json.Marshal(state.TokenUsages)
 
 	completedAt := sql.NullString{}
 	if state.CompletedAt != nil {
@@ -382,8 +383,8 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 		INSERT INTO runs(
 			id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
 			patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json, confidence_json, test_failures_json, test_results, retries_json,
-			unresolved_failures_json, best_patch_summary, error, started_at, completed_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			unresolved_failures_json, best_patch_summary, error, started_at, completed_at, token_usages_json
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			task_brief_json=excluded.task_brief_json,
 			status=excluded.status,
@@ -401,7 +402,8 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 			unresolved_failures_json=excluded.unresolved_failures_json,
 			best_patch_summary=excluded.best_patch_summary,
 			error=excluded.error,
-			completed_at=excluded.completed_at`
+			completed_at=excluded.completed_at,
+			token_usages_json=excluded.token_usages_json`
 
 	if _, err := s.db.Exec(upsertRun,
 		state.ID,
@@ -426,6 +428,7 @@ func (s *Store) SaveRunState(state *models.RunState) error {
 		nullString(state.Error),
 		state.StartedAt.UTC().Format(time.RFC3339Nano),
 		nullStringFromNull(completedAt),
+		nullJSON(tokenUsagesJSON),
 	); err != nil {
 		return fmt.Errorf("upsert run: %w", err)
 	}
@@ -533,7 +536,7 @@ func (s *Store) GetLatestRunStateBySession(sessionID string) (*models.RunState, 
 		`SELECT id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
 		        patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json,
 		        confidence_json, test_failures_json, test_results, retries_json, unresolved_failures_json,
-		        best_patch_summary, error, started_at, completed_at
+		        best_patch_summary, error, started_at, completed_at, token_usages_json
 		 FROM runs
 		 WHERE session_id = ?
 		 ORDER BY started_at DESC
@@ -568,7 +571,7 @@ func (s *Store) GetRunState(projectID, runID string) (*models.RunState, error) {
 		`SELECT id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
 		        patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json,
 		        confidence_json, test_failures_json, test_results, retries_json, unresolved_failures_json,
-		        best_patch_summary, error, started_at, completed_at
+		        best_patch_summary, error, started_at, completed_at, token_usages_json
 		 FROM runs
 		 WHERE project_id = ? AND id = ?
 		 LIMIT 1`,
@@ -603,7 +606,7 @@ func (s *Store) ListRunStatesByProject(projectID string, limit int) ([]*models.R
 		`SELECT id, project_id, session_id, task_json, task_brief_json, status, plan_json, execution_contract_json,
 		        patch_json, validation_results_json, retry_directive_json, review_json, review_scorecard_json,
 		        confidence_json, test_failures_json, test_results, retries_json, unresolved_failures_json,
-		        best_patch_summary, error, started_at, completed_at
+		        best_patch_summary, error, started_at, completed_at, token_usages_json
 		 FROM runs
 		 WHERE project_id = ?
 		 ORDER BY started_at DESC
@@ -703,6 +706,7 @@ func scanRunState(scanner runStateScanner) (*models.RunState, error) {
 		errorText             sql.NullString
 		startedAt             string
 		completedAt           sql.NullString
+		tokenUsagesJSON       sql.NullString
 	)
 
 	if err := scanner.Scan(
@@ -728,6 +732,7 @@ func scanRunState(scanner runStateScanner) (*models.RunState, error) {
 		&errorText,
 		&startedAt,
 		&completedAt,
+		&tokenUsagesJSON,
 	); err != nil {
 		return nil, err
 	}
@@ -822,6 +827,11 @@ func scanRunState(scanner runStateScanner) (*models.RunState, error) {
 	if strings.TrimSpace(unresolvedJSON.String) != "" {
 		if err := json.Unmarshal([]byte(unresolvedJSON.String), &state.UnresolvedFailures); err != nil {
 			return nil, fmt.Errorf("unmarshal unresolved failures: %w", err)
+		}
+	}
+	if strings.TrimSpace(tokenUsagesJSON.String) != "" {
+		if err := json.Unmarshal([]byte(tokenUsagesJSON.String), &state.TokenUsages); err != nil {
+			return nil, fmt.Errorf("unmarshal token usages: %w", err)
 		}
 	}
 
@@ -1363,6 +1373,7 @@ func (s *Store) ensureRunColumns() error {
 		"review_scorecard_json":   "TEXT",
 		"confidence_json":         "TEXT",
 		"test_failures_json":      "TEXT",
+		"token_usages_json":       "TEXT",
 	}
 
 	for column, definition := range required {

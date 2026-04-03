@@ -36,10 +36,15 @@ func (p *Planner) Execute(input *Input) (*Output, error) {
 
 	basePlan := buildBasePlan(input)
 	if p.runtime != nil {
+		systemPrompt := "You are a planning refinement agent. Refine the plan concisely and keep scope bounded."
+		if input.SkillHints != "" {
+			systemPrompt += "\n\n" + input.SkillHints
+		}
 		response, err := p.runtime.Chat(context.Background(), providers.ChatRequest{
 			Role:         providers.RolePlanner,
-			SystemPrompt: "You are a planning refinement agent. Refine the plan concisely and keep scope bounded.",
+			SystemPrompt: systemPrompt,
 			UserPrompt:   buildPlannerPrompt(input),
+			MaxTokens:    input.MaxTokens,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("planner provider call failed: %w", err)
@@ -59,7 +64,7 @@ func (p *Planner) Execute(input *Input) (*Output, error) {
 			plan.TestStrategy = "Run the configured test command after code changes"
 		}
 
-		return &Output{Plan: plan}, nil
+		return &Output{Plan: plan, Usage: response.Usage}, nil
 	}
 
 	return &Output{Plan: clonePlan(basePlan)}, nil
@@ -112,8 +117,9 @@ func buildPlannerPrompt(input *Input) string {
 			b.WriteString(input.Plan.Summary)
 		}
 		if len(input.Plan.FilesToInspect) > 0 {
+			inspect := truncateList(input.Plan.FilesToInspect, 20)
 			b.WriteString("\nCandidate Files To Inspect: ")
-			b.WriteString(strings.Join(input.Plan.FilesToInspect, ", "))
+			b.WriteString(strings.Join(inspect, ", "))
 		}
 		if len(input.Plan.AcceptanceCriteria) > 0 {
 			criteria := make([]string, 0, len(input.Plan.AcceptanceCriteria))

@@ -224,8 +224,10 @@ type RunState struct {
 	// Review contains review output when available.
 	Review *ReviewResult `json:"review,omitempty"`
 	// TestResults stores summarized test execution output.
-	TestResults        string     `json:"test_results,omitempty"`
-	Retries            RetryState `json:"retries"`
+	TestResults string     `json:"test_results,omitempty"`
+	// TokenUsages records per-stage LLM token consumption.
+	TokenUsages        []TokenUsage `json:"token_usages,omitempty"`
+	Retries            RetryState   `json:"retries"`
 	UnresolvedFailures []string   `json:"unresolved_failures,omitempty"`
 	BestPatchSummary   string     `json:"best_patch_summary,omitempty"`
 	Logs               []LogEntry `json:"logs"`
@@ -253,10 +255,26 @@ type LogEntry struct {
 	Message   string    `json:"message"`
 }
 
+type ContextDepth string
+
+const (
+	ContextDepthShallow  ContextDepth = "shallow"
+	ContextDepthStandard ContextDepth = "standard"
+	ContextDepthDeep     ContextDepth = "deep"
+)
+
 type ContextResult struct {
 	SelectedFiles   []string `json:"selected_files"`
 	RelatedTests    []string `json:"related_tests"`
 	RelevantConfigs []string `json:"relevant_configs"`
+}
+
+type TokenUsage struct {
+	Stage         string  `json:"stage"`
+	Role          string  `json:"role"`
+	InputTokens   int     `json:"input_tokens"`
+	OutputTokens  int     `json:"output_tokens"`
+	EstimatedCost float64 `json:"estimated_cost_usd"`
 }
 
 type ToolResult struct {

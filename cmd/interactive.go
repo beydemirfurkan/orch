@@ -48,6 +48,11 @@ type interactiveModel struct {
 	suggestions     []commandEntry
 	suggestionIdx   int
 
+	// Pipeline stage tracking
+	pipelineStage string
+	activeAgent   string
+	lastRunCost   string
+
 	// New modal selection state
 	activeModal *modalState
 }
@@ -95,10 +100,11 @@ type commandEntry struct {
 }
 
 var allCommands = []commandEntry{
-	{Name: "/agents", Desc: "Switch agent"},
+	{Name: "/agents", Desc: "List active agents, models, and skills"},
 	{Name: "/auth", Desc: "Login/Logout from provider"},
 	{Name: "/connect", Desc: "Connect provider credentials"},
 	{Name: "/clear", Desc: "Clear chat history"},
+	{Name: "/cost", Desc: "Show token usage and estimated cost for recent runs"},
 	{Name: "/exit", Desc: "Exit the app"},
 	{Name: "/help", Desc: "Show help messages"},
 	{Name: "/init", Desc: "Initialize or update project config"},
@@ -331,6 +337,8 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runExecutionMsg:
 		m.running = false
+		m.activeAgent = ""
+		m.pipelineStage = ""
 		m.providerLine, m.authLine, m.modelsLine = readRuntimeStatus()
 		m.appendUserMessage(msg.command)
 		if msg.err != nil {
@@ -338,6 +346,9 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.appendSpacer()
 			m.viewport.GotoBottom()
 			return m, nil
+		}
+		if msg.result != nil && msg.result.State != nil {
+			m.lastRunCost = formatRunCost(msg.result.State)
 		}
 		m.appendAssistantMessage("Orch", []string{naturalRunReply(msg.result)})
 		m.appendAssistantMessage("Run Result", compactRunLines(msg.result, m.verboseMode))
@@ -580,6 +591,22 @@ func (m *interactiveModel) handleCommand() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if raw == "/cost" {
+		lines := m.buildCostLines()
+		m.appendAssistantMessage("Token Cost", lines)
+		m.appendSpacer()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+
+	if raw == "/agents" {
+		lines := m.buildAgentsLines()
+		m.appendAssistantMessage("Agents", lines)
+		m.appendSpacer()
+		m.viewport.GotoBottom()
+		return m, nil
+	}
+
 	dispatch, err := prepareInteractiveDispatch(raw)
 	if err != nil {
 		m.appendErrorMessage(fmt.Sprintf("error: %v", err))
@@ -626,13 +653,30 @@ func (m *interactiveModel) View() string {
 
 		contentWidth := max(60, min(80, m.viewport.Width))
 
-		headerInfo := dracula.muted.Render(fmt.Sprintf("%s • %s • %s", providerState, authState, modelSummary))
+		headerParts := fmt.Sprintf("%s • %s • %s", providerState, authState, modelSummary)
+		if m.lastRunCost != "" {
+			headerParts += " • " + m.lastRunCost
+		}
+		if m.pipelineStage != "" && m.running {
+			headerParts += " • " + dracula.statusRun.Render(m.pipelineStage)
+		}
+		headerInfo := dracula.muted.Render(headerParts)
 		header := lipgloss.PlaceHorizontal(m.viewport.Width, lipgloss.Right, headerInfo) + "\n"
 
 		bodyContent := dracula.panel.Width(contentWidth).Render(m.viewport.View())
 		body := lipgloss.PlaceHorizontal(m.viewport.Width, lipgloss.Center, bodyContent)
 
-		composerContent := dracula.panel.Width(contentWidth).Render(m.input.View())
+		var composerInner string
+		if m.running {
+			agentLabel := m.activeAgent
+			if agentLabel == "" {
+				agentLabel = "orch"
+			}
+			composerInner = dracula.statusRun.Render(m.spinner.View()+" "+agentLabel) + dracula.muted.Render(" — working...")
+		} else {
+			composerInner = m.input.View()
+		}
+		composerContent := dracula.panel.Width(contentWidth).Render(composerInner)
 
 		var suggestionsView string
 		if m.showSuggestions {
@@ -1131,6 +1175,24 @@ func shortInteractivePath(path string) string {
 	return ".../" + strings.Join(filtered[len(filtered)-3:], "/")
 }
 
+// formatRunCost formats the total token usage of a run into a compact display string.
+func formatRunCost(state *models.RunState) string {
+	if state == nil || len(state.TokenUsages) == 0 {
+		return ""
+	}
+	var totalIn, totalOut int
+	var totalCost float64
+	for _, u := range state.TokenUsages {
+		totalIn += u.InputTokens
+		totalOut += u.OutputTokens
+		totalCost += u.EstimatedCost
+	}
+	if totalIn+totalOut == 0 {
+		return ""
+	}
+	return fmt.Sprintf("↑%s/↓%s tokens ~$%.4f", formatInt(totalIn), formatInt(totalOut), totalCost)
+}
+
 func naturalRunReply(result *runExecutionResult) string {
 	if result == nil || result.State == nil {
 		return "Run could not be completed; details are in the result card below."
@@ -1382,6 +1444,157 @@ func runtimeStatusSnapshot() runtimeStatus {
 func readRuntimeStatus() (providerLine, authLine, modelsLine string) {
 	status := runtimeStatusSnapshot()
 	return status.providerLine, status.authLine, status.modelsLine
+}
+
+// buildCostLines queries storage for the last 20 runs and returns a per-run cost table.
+func (m *interactiveModel) buildCostLines() []string {
+	cwd := m.cwd
+	if cwd == "" {
+		var err error
+		cwd, err = getWorkingDirectory()
+		if err != nil {
+			return []string{"error: could not determine working directory"}
+		}
+	}
+	ctx, err := loadSessionContext(cwd)
+	if err != nil {
+		return []string{fmt.Sprintf("error loading storage: %v", err)}
+	}
+	defer ctx.Store.Close()
+
+	states, err := ctx.Store.ListRunStatesByProject(ctx.ProjectID, 20)
+	if err != nil {
+		return []string{fmt.Sprintf("error reading runs: %v", err)}
+	}
+	if len(states) == 0 {
+		return []string{"No runs found. Execute a task with /run first."}
+	}
+
+	lines := []string{}
+	var grandIn, grandOut int
+	var grandCost float64
+	hasAny := false
+
+	for _, state := range states {
+		if state == nil || len(state.TokenUsages) == 0 {
+			continue
+		}
+		hasAny = true
+		var in, out int
+		var cost float64
+		for _, u := range state.TokenUsages {
+			in += u.InputTokens
+			out += u.OutputTokens
+			cost += u.EstimatedCost
+		}
+		grandIn += in
+		grandOut += out
+		grandCost += cost
+		shortID := state.ID
+		if len(shortID) > 12 {
+			shortID = shortID[:12]
+		}
+		lines = append(lines, fmt.Sprintf("  %s  in:%-7s out:%-7s ~$%.4f  [%s]",
+			shortID,
+			formatInt(in),
+			formatInt(out),
+			cost,
+			strings.ToLower(string(state.Status)),
+		))
+	}
+
+	if !hasAny {
+		return []string{"No token usage data yet. Token tracking requires model calls to complete."}
+	}
+
+	lines = append(lines, "  ─────────────────────────────────────────────")
+	lines = append(lines, fmt.Sprintf("  TOTAL          in:%-7s out:%-7s ~$%.4f",
+		formatInt(grandIn), formatInt(grandOut), grandCost))
+	return lines
+}
+
+// buildAgentsLines returns a summary of each agent, its model, token budget, and skills.
+func (m *interactiveModel) buildAgentsLines() []string {
+	cwd := m.cwd
+	if cwd == "" {
+		var err error
+		cwd, err = getWorkingDirectory()
+		if err != nil {
+			return []string{"error: could not determine working directory"}
+		}
+	}
+	cfg, err := config.Load(cwd)
+	if err != nil {
+		return []string{fmt.Sprintf("error loading config: %v", err)}
+	}
+
+	roleModel := func(role string) string {
+		if v, ok := cfg.Provider.RoleAssignments[role]; ok && v != "" {
+			return v
+		}
+		switch role {
+		case "planner":
+			return cfg.Provider.OpenAI.Models.Planner
+		case "coder":
+			return cfg.Provider.OpenAI.Models.Coder
+		case "reviewer":
+			return cfg.Provider.OpenAI.Models.Reviewer
+		case "explorer":
+			if cfg.Provider.OpenAI.Models.Explorer != "" {
+				return cfg.Provider.OpenAI.Models.Explorer
+			}
+			return "(default)"
+		case "oracle":
+			if cfg.Provider.OpenAI.Models.Oracle != "" {
+				return cfg.Provider.OpenAI.Models.Oracle
+			}
+			return "(default)"
+		case "fixer":
+			if cfg.Provider.OpenAI.Models.Fixer != "" {
+				return cfg.Provider.OpenAI.Models.Fixer
+			}
+			return "(default)"
+		}
+		return "unknown"
+	}
+
+	agentSkills := func(name string) string {
+		global := cfg.Skills.GlobalSkills
+		local := cfg.Skills.AgentSkills[name]
+		all := append(global, local...)
+		if len(all) == 0 {
+			return "none"
+		}
+		return strings.Join(all, ", ")
+	}
+
+	type agentRow struct {
+		name    string
+		model   string
+		budget  int
+		enabled bool
+	}
+
+	rows := []agentRow{
+		{"planner", roleModel("planner"), cfg.Budget.PlannerMaxTokens, true},
+		{"coder", roleModel("coder"), cfg.Budget.CoderMaxTokens, true},
+		{"reviewer", roleModel("reviewer"), cfg.Budget.ReviewerMaxTokens, true},
+		{"explorer", roleModel("explorer"), 4096, cfg.Safety.FeatureFlags.ExplorerEnabled},
+		{"oracle", roleModel("oracle"), 4096, cfg.Safety.FeatureFlags.OracleEnabled},
+		{"fixer", roleModel("fixer"), cfg.Budget.FixerMaxTokens, cfg.Safety.FeatureFlags.FixerEnabled},
+	}
+
+	lines := []string{}
+	for _, r := range rows {
+		status := "enabled"
+		if !r.enabled {
+			status = "disabled"
+		}
+		skills := agentSkills(r.name)
+		lines = append(lines, fmt.Sprintf("  %-10s  model:%-30s  budget:%-6d  skills:%-20s  [%s]",
+			r.name, r.model, r.budget, skills, status))
+	}
+	return lines
 }
 
 func generateSessionID() string {

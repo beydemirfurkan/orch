@@ -39,17 +39,22 @@ func (r *Reviewer) Execute(input *Input) (*Output, error) {
 	}
 
 	if r.runtime != nil {
+		systemPrompt := "You are a reviewer. Decide accept or revise and give concise feedback."
+		if input.SkillHints != "" {
+			systemPrompt += "\n\n" + input.SkillHints
+		}
 		response, err := r.runtime.Chat(context.Background(), providers.ChatRequest{
 			Role:         providers.RoleReviewer,
-			SystemPrompt: "You are a reviewer. Decide accept or revise and give concise feedback.",
+			SystemPrompt: systemPrompt,
 			UserPrompt:   buildReviewerPrompt(input),
+			MaxTokens:    input.MaxTokens,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("reviewer provider call failed: %w", err)
 		}
 
 		review := parseReviewResponse(response.Text)
-		return &Output{Review: review}, nil
+		return &Output{Review: review, Usage: response.Usage}, nil
 	}
 
 	review := &models.ReviewResult{

@@ -10,6 +10,7 @@ import (
 
 	"github.com/furkanbeydemir/orch/internal/agents"
 	"github.com/furkanbeydemir/orch/internal/auth"
+	"github.com/furkanbeydemir/orch/internal/skills"
 	"github.com/furkanbeydemir/orch/internal/confidence"
 	"github.com/furkanbeydemir/orch/internal/config"
 	"github.com/furkanbeydemir/orch/internal/execution"
@@ -18,6 +19,8 @@ import (
 	"github.com/furkanbeydemir/orch/internal/patch"
 	"github.com/furkanbeydemir/orch/internal/planning"
 	"github.com/furkanbeydemir/orch/internal/providers"
+	anthropicprovider "github.com/furkanbeydemir/orch/internal/providers/anthropic"
+	ollamaprovider "github.com/furkanbeydemir/orch/internal/providers/ollama"
 	"github.com/furkanbeydemir/orch/internal/providers/openai"
 	"github.com/furkanbeydemir/orch/internal/repo"
 	reviewengine "github.com/furkanbeydemir/orch/internal/review"
@@ -34,6 +37,9 @@ type Orchestrator struct {
 	planner          agents.Agent
 	coder            agents.Agent
 	reviewer         agents.Agent
+	explorer         *agents.Explorer
+	oracle           *agents.Oracle
+	fixer            *agents.Fixer
 	patchPipeline    *patch.Pipeline
 	contractBuilder  *execution.ContractBuilder
 	scopeGuard       *execution.ScopeGuard
@@ -44,6 +50,7 @@ type Orchestrator struct {
 	confidenceScorer *confidence.Scorer
 	confidencePolicy *confidence.Policy
 	toolRegistry     *tools.Registry
+	skillRegistry    *skills.Registry
 	repoRoot         string
 	providerReady    bool
 	// verbose controls detailed log output.
@@ -62,6 +69,9 @@ func New(cfg *config.Config, repoRoot string, verbose bool) *Orchestrator {
 		planner:          agents.NewPlanner(cfg.Models.Planner),
 		coder:            agents.NewCoder(cfg.Models.Coder),
 		reviewer:         agents.NewReviewer(cfg.Models.Reviewer),
+		explorer:         agents.NewExplorer(),
+		oracle:           agents.NewOracle(),
+		fixer:            agents.NewFixer(),
 		patchPipeline:    patch.NewPipeline(cfg.Patch.MaxFiles, cfg.Patch.MaxLines),
 		contractBuilder:  execution.NewContractBuilder(cfg),
 		scopeGuard:       execution.NewScopeGuard(),
@@ -71,7 +81,8 @@ func New(cfg *config.Config, repoRoot string, verbose bool) *Orchestrator {
 		reviewEngine:     reviewengine.NewEngine(),
 		confidenceScorer: confidence.New(),
 		confidencePolicy: confidence.NewPolicy(cfg),
-		toolRegistry:     tools.DefaultRegistryWithPolicy(repoRoot, buildPolicy(cfg, tools.ModeRun), nil),
+		toolRegistry:     buildToolRegistry(cfg, repoRoot, tools.ModeRun, nil),
+		skillRegistry:    buildSkillRegistry(cfg),
 		repoRoot:         repoRoot,
 		verbose:          verbose,
 	}
@@ -126,6 +137,28 @@ func (o *Orchestrator) attachProviderRuntime() {
 		return accountSession.ResolveToken(ctx)
 	})
 	registry.Register(client)
+
+	// Register Anthropic provider if API key is available.
+	anthropicKey := strings.TrimSpace(os.Getenv(o.cfg.Provider.Anthropic.APIKeyEnv))
+	if anthropicKey != "" {
+		anthropicCfg := anthropicprovider.Config{
+			APIKeyEnv:      o.cfg.Provider.Anthropic.APIKeyEnv,
+			BaseURL:        o.cfg.Provider.Anthropic.BaseURL,
+			TimeoutSeconds: o.cfg.Provider.Anthropic.TimeoutSeconds,
+			MaxRetries:     o.cfg.Provider.Anthropic.MaxRetries,
+		}
+		registry.Register(anthropicprovider.New(anthropicCfg))
+	}
+
+	// Register Ollama provider if explicitly enabled in config.
+	if o.cfg.Provider.Ollama.Enabled {
+		ollamaCfg := ollamaprovider.Config{
+			BaseURL:        o.cfg.Provider.Ollama.BaseURL,
+			TimeoutSeconds: o.cfg.Provider.Ollama.TimeoutSeconds,
+		}
+		registry.Register(ollamaprovider.New(ollamaCfg))
+	}
+
 	router := providers.NewRouter(o.cfg, registry)
 	runtime := &agents.LLMRuntime{Router: router}
 	o.providerReady = true
@@ -138,6 +171,15 @@ func (o *Orchestrator) attachProviderRuntime() {
 	}
 	if reviewer, ok := o.reviewer.(*agents.Reviewer); ok {
 		reviewer.SetRuntime(runtime)
+	}
+	if o.explorer != nil {
+		o.explorer.SetRuntime(runtime)
+	}
+	if o.oracle != nil {
+		o.oracle.SetRuntime(runtime)
+	}
+	if o.fixer != nil {
+		o.fixer.SetRuntime(runtime)
 	}
 }
 
@@ -162,7 +204,7 @@ func (o *Orchestrator) Run(task *models.Task) (*models.RunState, error) {
 	} else {
 		o.log.Log("provider", "status", "inactive; falling back to local agent behavior")
 	}
-	o.toolRegistry = tools.DefaultRegistryWithPolicy(o.repoRoot, buildPolicy(o.cfg, tools.ModeRun), func(message string) {
+	o.toolRegistry = buildToolRegistry(o.cfg, o.repoRoot, tools.ModeRun, func(message string) {
 		o.log.Log("policy", "decision", message)
 	})
 
@@ -171,9 +213,23 @@ func (o *Orchestrator) Run(task *models.Task) (*models.RunState, error) {
 		return o.fail(state, err)
 	}
 
+	// 1b. Explorer (optional — gated by feature flag)
+	if o.cfg.Safety.FeatureFlags.ExplorerEnabled {
+		if err := o.stepExplore(state); err != nil {
+			o.log.Log("explorer", "warn", fmt.Sprintf("Explorer failed (non-fatal): %v", err))
+		}
+	}
+
 	// 2. Planning
 	if err := o.stepPlan(state); err != nil {
 		return o.fail(state, err)
+	}
+
+	// 2b. Oracle (optional — gated by feature flag)
+	if o.cfg.Safety.FeatureFlags.OracleEnabled {
+		if err := o.stepOracle(state); err != nil {
+			o.log.Log("oracle", "warn", fmt.Sprintf("Oracle failed (non-fatal): %v", err))
+		}
 	}
 
 	if err := o.stepCode(state); err != nil {
@@ -213,7 +269,7 @@ func (o *Orchestrator) Plan(task *models.Task) (*models.Plan, error) {
 
 func (o *Orchestrator) PlanDetailed(task *models.Task) (*models.TaskBrief, *models.Plan, error) {
 	o.log.Log("policy", "mode", "policy decision mode=plan read_only=true")
-	o.toolRegistry = tools.DefaultRegistryWithPolicy(o.repoRoot, buildPolicy(o.cfg, tools.ModePlan), func(message string) {
+	o.toolRegistry = buildToolRegistry(o.cfg, o.repoRoot, tools.ModePlan, func(message string) {
 		o.log.Log("policy", "decision", message)
 	})
 	o.log.Log("orchestrator", "plan-only", fmt.Sprintf("Generating plan: %s", task.Description))
@@ -240,6 +296,53 @@ func (o *Orchestrator) PlanDetailed(task *models.Task) (*models.TaskBrief, *mode
 	}
 
 	return taskBrief, output.Plan, nil
+}
+
+func (o *Orchestrator) stepExplore(state *models.RunState) error {
+	o.log.Log("explorer", "explore", "Running codebase reconnaissance...")
+	repoMap, err := o.analyzer.Analyze()
+	if err != nil {
+		return fmt.Errorf("explorer: repo analysis failed: %w", err)
+	}
+	input := &agents.Input{
+		Task:         &state.Task,
+		TaskBrief:    state.TaskBrief,
+		RepoMap:      repoMap,
+		Plan:         state.Plan,
+		MaxTokens:    o.cfg.Budget.PlannerMaxTokens,
+		ContextDepth: models.ContextDepthShallow,
+	}
+	output, err := o.explorer.Execute(input)
+	if err != nil {
+		return err
+	}
+	if output != nil {
+		o.recordUsage(state, "exploring", string(providers.RoleExplorer), output.Usage)
+	}
+	o.log.Log("explorer", "explore", "Exploration complete")
+	return nil
+}
+
+func (o *Orchestrator) stepOracle(state *models.RunState) error {
+	if state.Plan == nil {
+		return nil
+	}
+	o.log.Log("oracle", "advise", "Oracle reviewing plan...")
+	input := &agents.Input{
+		Task:      &state.Task,
+		TaskBrief: state.TaskBrief,
+		Plan:      state.Plan,
+		MaxTokens: o.cfg.Budget.ReviewerMaxTokens,
+	}
+	output, err := o.oracle.Execute(input)
+	if err != nil {
+		return err
+	}
+	if output != nil {
+		o.recordUsage(state, "oracle", string(providers.RoleOracle), output.Usage)
+	}
+	o.log.Log("oracle", "advise", "Oracle review complete")
+	return nil
 }
 
 func (o *Orchestrator) stepAnalyze(state *models.RunState) error {
@@ -273,15 +376,20 @@ func (o *Orchestrator) stepPlan(state *models.RunState) error {
 
 	taskBrief, compiledPlan := o.compilePlanArtifacts(&state.Task, repoMap)
 	input := &agents.Input{
-		Task:      &state.Task,
-		TaskBrief: taskBrief,
-		RepoMap:   repoMap,
-		Plan:      compiledPlan,
+		Task:       &state.Task,
+		TaskBrief:  taskBrief,
+		RepoMap:    repoMap,
+		Plan:       compiledPlan,
+		MaxTokens:  o.cfg.Budget.PlannerMaxTokens,
+		SkillHints: o.skillHintsForAgent("planner"),
 	}
 
 	output, err := o.planner.Execute(input)
 	if err != nil {
 		return fmt.Errorf("planning failed: %w", err)
+	}
+	if output != nil {
+		o.recordUsage(state, "planning", string(providers.RolePlanner), output.Usage)
 	}
 
 	state.TaskBrief = taskBrief
@@ -297,12 +405,22 @@ func (o *Orchestrator) stepPlan(state *models.RunState) error {
 }
 
 func (o *Orchestrator) stepCode(state *models.RunState) error {
+	return o.stepCodeWithDepth(state, contextDepthForRetry(state))
+}
+
+func (o *Orchestrator) stepCodeWithDepth(state *models.RunState, depth models.ContextDepth) error {
 	if err := Transition(state, models.StatusCoding); err != nil {
 		return err
 	}
-	o.log.Log("coder", "code", "Generating code changes...")
+	o.log.Log("coder", "code", fmt.Sprintf("Generating code changes (context=%s)...", depth))
 	if o.providerReady {
 		o.log.Log("provider", "coder", fmt.Sprintf("model=%s", o.cfg.Provider.OpenAI.Models.Coder))
+	}
+
+	repoMap, err := o.analyzer.Analyze()
+	if err == nil && state.Plan != nil {
+		state.Context = o.contextBuilder.BuildWithDepth(&state.Task, repoMap, state.Plan, depth)
+		o.log.Log("context", "depth", fmt.Sprintf("depth=%s selected=%d tests=%d", depth, len(state.Context.SelectedFiles), len(state.Context.RelatedTests)))
 	}
 
 	state.ExecutionContract = o.contractBuilder.Build(&state.Task, state.TaskBrief, state.Plan, state.Context)
@@ -317,11 +435,17 @@ func (o *Orchestrator) stepCode(state *models.RunState) error {
 		ExecutionContract: state.ExecutionContract,
 		Context:           state.Context,
 		RetryDirective:    state.RetryDirective,
+		MaxTokens:         o.cfg.Budget.CoderMaxTokens,
+		ContextDepth:      depth,
+		SkillHints:        o.skillHintsForAgent("coder"),
 	}
 
 	output, err := o.coder.Execute(input)
 	if err != nil {
 		return fmt.Errorf("code generation failed: %w", err)
+	}
+	if output != nil {
+		o.recordUsage(state, "coding", string(providers.RoleCoder), output.Usage)
 	}
 
 	state.Patch = output.Patch
@@ -512,11 +636,16 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 		Patch:             state.Patch,
 		ValidationResults: state.ValidationResults,
 		TestResults:       state.TestResults,
+		MaxTokens:         o.cfg.Budget.ReviewerMaxTokens,
+		SkillHints:        o.skillHintsForAgent("reviewer"),
 	}
 
 	output, err := o.reviewer.Execute(input)
 	if err != nil {
 		return fmt.Errorf("review failed: %w", err)
+	}
+	if output != nil {
+		o.recordUsage(state, "reviewing", string(providers.RoleReviewer), output.Usage)
 	}
 
 	var providerReview *models.ReviewResult
@@ -563,7 +692,7 @@ func (o *Orchestrator) stepValidateWithRetries(state *models.RunState) error {
 			o.log.Log("orchestrator", "retry_contract", fmt.Sprintf("stage=%s attempt=%d failed_gates=%s", state.RetryDirective.Stage, state.RetryDirective.Attempt, strings.Join(state.RetryDirective.FailedGates, ",")))
 		}
 		o.log.Log("orchestrator", "retry", fmt.Sprintf("Validation failed, retrying code generation (%d/%d)", state.Retries.Validation, maxRetries))
-		if codeErr := o.stepCode(state); codeErr != nil {
+		if codeErr := o.stepCodeWithFixer(state); codeErr != nil {
 			o.addUnresolvedFailure(state, "coding-after-validation", codeErr)
 			return codeErr
 		}
@@ -593,7 +722,7 @@ func (o *Orchestrator) stepTestWithRetries(state *models.RunState) error {
 			o.log.Log("orchestrator", "retry_contract", fmt.Sprintf("stage=%s attempt=%d failed_tests=%d", state.RetryDirective.Stage, state.RetryDirective.Attempt, len(state.RetryDirective.FailedTests)))
 		}
 		o.log.Log("orchestrator", "retry", fmt.Sprintf("Tests failed, retrying code generation (%d/%d)", state.Retries.Testing, maxRetries))
-		if codeErr := o.stepCode(state); codeErr != nil {
+		if codeErr := o.stepCodeWithFixer(state); codeErr != nil {
 			o.addUnresolvedFailure(state, "coding-after-test", codeErr)
 			return codeErr
 		}
@@ -671,6 +800,94 @@ func (o *Orchestrator) compilePlanArtifacts(task *models.Task, repoMap *models.R
 	return taskBrief, compiledPlan
 }
 
+// stepCodeWithFixer tries the Fixer agent first (when enabled and a patch exists),
+// falling back to the full Coder on failure or when Fixer produces no output.
+func (o *Orchestrator) stepCodeWithFixer(state *models.RunState) error {
+	if o.cfg.Safety.FeatureFlags.FixerEnabled && o.fixer != nil && state.Patch != nil {
+		o.log.Log("fixer", "fix", "Attempting surgical fix...")
+		input := &agents.Input{
+			Task:              &state.Task,
+			TaskBrief:         state.TaskBrief,
+			Plan:              state.Plan,
+			ExecutionContract: state.ExecutionContract,
+			Patch:             state.Patch,
+			ValidationResults: state.ValidationResults,
+			RetryDirective:    state.RetryDirective,
+			MaxTokens:         o.cfg.Budget.FixerMaxTokens,
+		}
+		output, err := o.fixer.Execute(input)
+		if err == nil && output != nil && output.Patch != nil && strings.TrimSpace(output.Patch.RawDiff) != "" {
+			o.recordUsage(state, "fixing", string(providers.RoleFixer), output.Usage)
+			state.Patch = output.Patch
+			state.RetryDirective = nil
+			o.log.Log("fixer", "fix", "Surgical fix applied")
+			return nil
+		}
+		o.log.Log("fixer", "fallback", "Fixer produced no output, escalating to full coder")
+	}
+	return o.stepCode(state)
+}
+
+// contextDepthForRetry returns Shallow on first attempt, Standard on second, Deep on third+.
+func contextDepthForRetry(state *models.RunState) models.ContextDepth {
+	totalRetries := state.Retries.Validation + state.Retries.Testing + state.Retries.Review
+	switch {
+	case totalRetries == 0:
+		return models.ContextDepthShallow
+	case totalRetries == 1:
+		return models.ContextDepthStandard
+	default:
+		return models.ContextDepthDeep
+	}
+}
+
+// buildSkillRegistry creates the skills registry with built-in skills enabled per config.
+func buildSkillRegistry(cfg *config.Config) *skills.Registry {
+	reg := skills.DefaultRegistry()
+	if cfg == nil {
+		return reg
+	}
+	// Enable globally configured skills.
+	for _, name := range cfg.Skills.GlobalSkills {
+		if s, err := reg.Get(name); err == nil {
+			s.Enabled = true
+		}
+	}
+	// Enable per-agent skills (mark them enabled so hints are collected).
+	for _, skillNames := range cfg.Skills.AgentSkills {
+		for _, name := range skillNames {
+			if s, err := reg.Get(name); err == nil {
+				s.Enabled = true
+			}
+		}
+	}
+	return reg
+}
+
+// skillHintsForAgent returns the combined system hint string for an agent,
+// merging global skills and agent-specific skills from config.
+func (o *Orchestrator) skillHintsForAgent(agentName string) string {
+	if o.skillRegistry == nil || o.cfg == nil {
+		return ""
+	}
+	names := make([]string, 0)
+	names = append(names, o.cfg.Skills.GlobalSkills...)
+	if agentSkills, ok := o.cfg.Skills.AgentSkills[agentName]; ok {
+		names = append(names, agentSkills...)
+	}
+	return o.skillRegistry.CollectHints(names)
+}
+
+// buildToolRegistry creates the tools registry with policy and MCP tools.
+func buildToolRegistry(cfg *config.Config, repoRoot, mode string, logf func(string)) *tools.Registry {
+	policy := buildPolicy(cfg, mode)
+	registry := tools.DefaultRegistryWithPolicy(repoRoot, policy, logf)
+	if cfg != nil {
+		tools.RegisterMCPTools(registry, cfg.MCP)
+	}
+	return registry
+}
+
 func buildPolicy(cfg *config.Config, mode string) tools.Policy {
 	policy := tools.Policy{Mode: mode}
 	if cfg != nil {
@@ -697,6 +914,34 @@ func patchFilePaths(p *models.Patch) []string {
 		return []string{"unknown"}
 	}
 	return paths
+}
+
+func (o *Orchestrator) recordUsage(state *models.RunState, stage, role string, usage providers.Usage) {
+	if usage.TotalTokens == 0 {
+		return
+	}
+	modelID := o.modelIDForRole(role)
+	cost := providers.EstimateCostUSD(modelID, usage.InputTokens, usage.OutputTokens)
+	state.TokenUsages = append(state.TokenUsages, models.TokenUsage{
+		Stage:         stage,
+		Role:          role,
+		InputTokens:   usage.InputTokens,
+		OutputTokens:  usage.OutputTokens,
+		EstimatedCost: cost,
+	})
+}
+
+func (o *Orchestrator) modelIDForRole(role string) string {
+	switch role {
+	case string(providers.RolePlanner):
+		return o.cfg.Provider.OpenAI.Models.Planner
+	case string(providers.RoleCoder):
+		return o.cfg.Provider.OpenAI.Models.Coder
+	case string(providers.RoleReviewer):
+		return o.cfg.Provider.OpenAI.Models.Reviewer
+	default:
+		return o.cfg.Provider.OpenAI.Models.Planner
+	}
 }
 
 func (o *Orchestrator) fail(state *models.RunState, err error) (*models.RunState, error) {

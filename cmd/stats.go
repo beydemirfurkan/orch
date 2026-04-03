@@ -67,6 +67,10 @@ type runStatsSummary struct {
 	TestFailureCodeCounts map[string]int
 	LatestRunID           string
 	LatestRunStatus       string
+	TotalInputTokens      int
+	TotalOutputTokens     int
+	TotalCostUSD          float64
+	TokenRunCount         int
 }
 
 func summarizeRunStats(states []*models.RunState) runStatsSummary {
@@ -124,6 +128,15 @@ func summarizeRunStats(states []*models.RunState) runStatsSummary {
 			}
 			summary.TestFailureCodeCounts[code]++
 		}
+
+		if len(state.TokenUsages) > 0 {
+			summary.TokenRunCount++
+			for _, u := range state.TokenUsages {
+				summary.TotalInputTokens += u.InputTokens
+				summary.TotalOutputTokens += u.OutputTokens
+				summary.TotalCostUSD += u.EstimatedCost
+			}
+		}
 	}
 
 	if summary.ConfidenceRunCount > 0 {
@@ -152,9 +165,28 @@ func printRunStats(summary runStatsSummary) {
 		fmt.Printf("Average Confidence: %.2f across %d run(s)\n", summary.AverageConfidence, summary.ConfidenceRunCount)
 	}
 
+	if summary.TokenRunCount > 0 {
+		fmt.Printf("\nToken Usage (%d runs with data)\n", summary.TokenRunCount)
+		fmt.Printf("  In:  %s tokens\n", formatInt(summary.TotalInputTokens))
+		fmt.Printf("  Out: %s tokens\n", formatInt(summary.TotalOutputTokens))
+		fmt.Printf("  Est. Cost: $%.4f USD\n", summary.TotalCostUSD)
+	}
+
 	printCountMap("Status Breakdown", summary.StatusCounts)
 	printCountMap("Confidence Bands", summary.ConfidenceBandCounts)
 	printCountMap("Test Failure Codes", summary.TestFailureCodeCounts)
+}
+
+func formatInt(n int) string {
+	s := fmt.Sprintf("%d", n)
+	out := make([]byte, 0, len(s)+len(s)/3)
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, byte(c))
+	}
+	return string(out)
 }
 
 func printCountMap(title string, counts map[string]int) {
