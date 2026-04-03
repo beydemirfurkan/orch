@@ -1,0 +1,54 @@
+version: 2
+
+project_name: orch
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: orch
+    main: .
+    binary: orch
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/furkanbeydemir/orch/cmd.version={{ .Version }}
+
+archives:
+  - id: binaries
+    ids:
+      - orch
+    formats:
+      - binary
+    name_template: >-
+      {{- .ProjectName }}-
+      {{- if eq .Os "darwin" }}darwin{{ else if eq .Os "linux" }}linux{{ else }}windows{{ end }}-
+      {{- if eq .Arch "amd64" }}x64{{ else }}arm64{{ end }}{{ if eq .Os "windows" }}.exe{{ end -}}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
+  name_template: "{{ .ProjectName }} v{{ .Version }}"

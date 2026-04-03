@@ -243,6 +243,30 @@ Run without building:
 go run . <command>
 ```
 
+### Release Flow
+
+`npm i -g orch` becomes zero-Go for end users once GitHub Releases and npm publish are both live.
+
+Repo automation now expects:
+- GitHub Actions secret: `NPM_TOKEN`
+- a git tag in the form `vX.Y.Z`
+- `package.json`, `package-lock.json`, and `cmd/version.go` to already match that version
+
+Release steps:
+
+```bash
+# update version metadata first
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow will:
+- run `go test ./...`
+- verify the tag matches package metadata
+- build darwin/linux/windows binaries with GoReleaser
+- publish a GitHub Release with raw binary assets
+- publish the npm package
+
 ---
 
 ## Quick Start
