@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"time"
 
@@ -56,6 +55,21 @@ var authLogoutCmd = &cobra.Command{
 	RunE:  runAuthLogout,
 }
 
+var authUseCmd = &cobra.Command{
+	Use:   "use <credential-id>",
+	Short: "Set the active stored credential",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runAuthUse,
+}
+
+var authRemoveCmd = &cobra.Command{
+	Use:     "remove <credential-id>",
+	Aliases: []string{"rm"},
+	Short:   "Remove one stored credential",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runAuthRemove,
+}
+
 var authOpenAICmd = &cobra.Command{
 	Use:    "openai",
 	Hidden: true,
@@ -71,10 +85,14 @@ func init() {
 	authLoginCmd.Flags().StringVar(&authAPIKeyFlag, "api-key", "", "API key")
 
 	authLogoutCmd.Flags().StringVarP(&authProviderFlag, "provider", "p", "openai", "Provider id")
+	authUseCmd.Flags().StringVarP(&authProviderFlag, "provider", "p", "openai", "Provider id")
+	authRemoveCmd.Flags().StringVarP(&authProviderFlag, "provider", "p", "openai", "Provider id")
 
 	authCmd.AddCommand(authLoginCmd)
 	authCmd.AddCommand(authStatusCmd)
 	authCmd.AddCommand(authListCmd)
+	authCmd.AddCommand(authUseCmd)
+	authCmd.AddCommand(authRemoveCmd)
 	authCmd.AddCommand(authLogoutCmd)
 	authOpenAICmd.AddCommand(newAuthCompatLoginCmd())
 	authOpenAICmd.AddCommand(newAuthCompatLogoutCmd())
@@ -173,6 +191,9 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 		fmt.Println("Credential saved to .orch/auth.json (0600).")
 		fmt.Printf("Auth mode set to api_key. Env %s is still supported with higher priority.\n", cfg.Provider.OpenAI.APIKeyEnv)
+		if active, activeErr := auth.Get(cwd, provider); activeErr == nil && active != nil {
+			fmt.Printf("Active credential id: %s\n", active.ID)
+		}
 		return nil
 	}
 
@@ -213,6 +234,9 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("Credential saved to .orch/auth.json (0600).")
 	fmt.Printf("Auth mode set to account. You can also use %s.\n", cfg.Provider.OpenAI.AccountTokenEnv)
+	if active, activeErr := auth.Get(cwd, provider); activeErr == nil && active != nil {
+		fmt.Printf("Active credential id: %s\n", active.ID)
+	}
 	if !result.ExpiresAt.IsZero() {
 		fmt.Printf("Token expires at: %s\n", result.ExpiresAt.UTC().Format(time.RFC3339))
 	}
@@ -234,6 +258,10 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	credentials, activeID, err := auth.List(cwd, "openai")
+	if err != nil {
+		return err
+	}
 
 	fmt.Println("Auth Status")
 	fmt.Println("-----------")
@@ -251,6 +279,10 @@ func runAuthStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("stored_api_key: %t\n", storedAPIKey)
 	fmt.Printf("stored_account_token: %t\n", storedAccount)
 	fmt.Printf("stored_account_refresh: %t\n", storedRefresh)
+	fmt.Printf("stored_credentials: %d\n", len(credentials))
+	if activeID != "" {
+		fmt.Printf("active_credential_id: %s\n", activeID)
+	}
 	if cred != nil && cred.Type == "oauth" && !cred.ExpiresAt.IsZero() {
 		fmt.Printf("account_expires_at: %s\n", cred.ExpiresAt.UTC().Format(time.RFC3339))
 	}
@@ -270,29 +302,76 @@ func runAuthList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
-	all, err := auth.LoadAll(cwd)
+	provider := resolveProviderArg(args)
+	if provider != "openai" {
+		return fmt.Errorf("unsupported provider: %s (supported: openai)", provider)
+	}
+
+	credentials, activeID, err := auth.List(cwd, provider)
 	if err != nil {
 		return err
 	}
 
 	fmt.Println("Stored Credentials")
 	fmt.Println("------------------")
-	if len(all) == 0 {
+	if len(credentials) == 0 {
 		fmt.Println("No stored credentials found.")
 		return nil
 	}
 
-	providers := make([]string, 0, len(all))
-	for provider := range all {
-		providers = append(providers, provider)
+	for _, cred := range credentials {
+		marker := " "
+		if cred.ID == activeID {
+			marker = "*"
+		}
+		line := fmt.Sprintf("%s %s (%s)", marker, cred.ID, cred.Type)
+		if cred.Email != "" {
+			line += " " + cred.Email
+		}
+		if cred.AccountID != "" {
+			line += " account=" + cred.AccountID
+		}
+		fmt.Println(line)
 	}
-	sort.Strings(providers)
 
-	for _, provider := range providers {
-		cred := all[provider]
-		fmt.Printf("%s (%s)\n", provider, cred.Type)
+	return nil
+}
+
+func runAuthUse(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
 	}
 
+	provider := resolveProviderArg(nil)
+	if provider != "openai" {
+		return fmt.Errorf("unsupported provider: %s (supported: openai)", provider)
+	}
+	credentialID := strings.TrimSpace(args[0])
+	if err := auth.SetActive(cwd, provider, credentialID); err != nil {
+		return err
+	}
+
+	fmt.Printf("Active credential set to %s for %s.\n", credentialID, provider)
+	return nil
+}
+
+func runAuthRemove(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get working directory: %w", err)
+	}
+
+	provider := resolveProviderArg(nil)
+	if provider != "openai" {
+		return fmt.Errorf("unsupported provider: %s (supported: openai)", provider)
+	}
+	credentialID := strings.TrimSpace(args[0])
+	if err := auth.RemoveCredential(cwd, provider, credentialID); err != nil {
+		return err
+	}
+
+	fmt.Printf("Stored credential %s removed for %s.\n", credentialID, provider)
 	return nil
 }
 

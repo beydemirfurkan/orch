@@ -9,12 +9,34 @@ import (
 const refreshSkew = 30 * time.Second
 
 func ResolveAccountCredential(repoRoot, provider string) (*Credential, error) {
+	return resolveAccountCredentialByID(repoRoot, provider, "")
+}
+
+func resolveAccountCredentialByID(repoRoot, provider, credentialID string) (*Credential, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
 		return nil, fmt.Errorf("provider is required")
 	}
 
-	cred, err := Get(repoRoot, provider)
+	var (
+		cred *Credential
+		err  error
+	)
+	if strings.TrimSpace(credentialID) == "" {
+		cred, err = Get(repoRoot, provider)
+	} else {
+		credentials, _, listErr := List(repoRoot, provider)
+		if listErr != nil {
+			return nil, listErr
+		}
+		for i := range credentials {
+			if credentials[i].ID == credentialID {
+				copy := credentials[i]
+				cred = &copy
+				break
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +78,10 @@ func ResolveAccountCredential(repoRoot, provider string) (*Credential, error) {
 		return nil, err
 	}
 
-	return Get(repoRoot, provider)
+	if strings.TrimSpace(credentialID) == "" {
+		return Get(repoRoot, provider)
+	}
+	return resolveAccountCredentialByID(repoRoot, provider, credentialID)
 }
 
 func ResolveAccountAccessToken(repoRoot, provider string) (string, error) {

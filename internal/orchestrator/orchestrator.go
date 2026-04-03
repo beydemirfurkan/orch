@@ -99,8 +99,17 @@ func (o *Orchestrator) attachProviderRuntime() {
 
 	registry := providers.NewRegistry()
 	client := openai.New(o.cfg.Provider.OpenAI)
+	var accountSession *auth.AccountSession
+	if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "account" && strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.AccountTokenEnv)) == "" {
+		accountSession = auth.NewAccountSession(o.repoRoot, "openai")
+		client.SetAccountFailoverHandler(func(ctx context.Context, err error) (string, bool, error) {
+			return accountSession.Failover(ctx, openai.AccountFailoverCooldown(err), err.Error())
+		})
+		client.SetAccountSuccessHandler(func(ctx context.Context) {
+			accountSession.MarkSuccess(ctx)
+		})
+	}
 	client.SetTokenResolver(func(ctx context.Context) (string, error) {
-		_ = ctx
 		if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "api_key" {
 			cred, err := auth.Get(o.repoRoot, "openai")
 			if err != nil || cred == nil {
@@ -111,7 +120,10 @@ func (o *Orchestrator) attachProviderRuntime() {
 			}
 			return "", nil
 		}
-		return auth.ResolveAccountAccessToken(o.repoRoot, "openai")
+		if accountSession == nil {
+			return "", nil
+		}
+		return accountSession.ResolveToken(ctx)
 	})
 	registry.Register(client)
 	router := providers.NewRouter(o.cfg, registry)

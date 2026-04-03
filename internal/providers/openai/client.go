@@ -18,10 +18,12 @@ import (
 )
 
 type Client struct {
-	cfg          config.OpenAIProviderConfig
-	httpClient   *http.Client
-	rand         *rand.Rand
-	resolveToken func(context.Context) (string, error)
+	cfg             config.OpenAIProviderConfig
+	httpClient      *http.Client
+	rand            *rand.Rand
+	resolveToken    func(context.Context) (string, error)
+	accountFailover func(context.Context, error) (string, bool, error)
+	accountSuccess  func(context.Context)
 }
 
 type requester interface {
@@ -49,6 +51,13 @@ func New(cfg config.OpenAIProviderConfig) *Client {
 			_ = ctx
 			return "", nil
 		},
+		accountFailover: func(ctx context.Context, err error) (string, bool, error) {
+			_, _ = ctx, err
+			return "", false, nil
+		},
+		accountSuccess: func(ctx context.Context) {
+			_ = ctx
+		},
 	}
 }
 
@@ -57,6 +66,20 @@ func (c *Client) SetTokenResolver(resolver func(context.Context) (string, error)
 		return
 	}
 	c.resolveToken = resolver
+}
+
+func (c *Client) SetAccountFailoverHandler(handler func(context.Context, error) (string, bool, error)) {
+	if handler == nil {
+		return
+	}
+	c.accountFailover = handler
+}
+
+func (c *Client) SetAccountSuccessHandler(handler func(context.Context)) {
+	if handler == nil {
+		return
+	}
+	c.accountSuccess = handler
 }
 
 func (c *Client) Name() string {
@@ -124,11 +147,11 @@ func (c *Client) Stream(ctx context.Context, req providers.ChatRequest) (<-chan 
 }
 
 func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, doer requester) (providers.ChatResponse, error) {
+	mode := c.authMode()
 	key, err := c.resolveAuthToken(ctx)
 	if err != nil {
 		return providers.ChatResponse{}, err
 	}
-	mode := c.authMode()
 
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
@@ -176,6 +199,12 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 		if doErr != nil {
 			mapped := mapHTTPError(doErr, 0, "chat")
 			lastErr = mapped
+			if nextToken, switched, switchErr := c.maybeFailoverAccount(ctx, mode, mapped); switchErr != nil {
+				return providers.ChatResponse{}, switchErr
+			} else if switched {
+				key = nextToken
+				continue
+			}
 			if isRetryable(mapped) && attempt < attempts {
 				c.sleepBackoff(attempt)
 				continue
@@ -197,6 +226,12 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 		if httpResp.StatusCode >= 300 {
 			mapped := mapStatusError(httpResp.StatusCode, string(data), "chat")
 			lastErr = mapped
+			if nextToken, switched, switchErr := c.maybeFailoverAccount(ctx, mode, mapped); switchErr != nil {
+				return providers.ChatResponse{}, switchErr
+			} else if switched {
+				key = nextToken
+				continue
+			}
 			if isRetryable(mapped) && attempt < attempts {
 				c.sleepBackoff(attempt)
 				continue
@@ -218,6 +253,12 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 			"provider": "openai",
 			"model":    model,
 		}
+		if mode == "account" {
+			if accountID, accountErr := extractAccountID(key); accountErr == nil {
+				parsed.ProviderMetadata["account_id"] = accountID
+			}
+			c.accountSuccess(ctx)
+		}
 		return parsed, nil
 	}
 
@@ -226,6 +267,43 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 	}
 
 	return providers.ChatResponse{}, lastErr
+}
+
+func (c *Client) maybeFailoverAccount(ctx context.Context, mode string, err error) (string, bool, error) {
+	if mode != "account" || !isAccountFailoverEligible(err) {
+		return "", false, nil
+	}
+	return c.accountFailover(ctx, err)
+}
+
+func isAccountFailoverEligible(err error) bool {
+	pe, ok := err.(*providers.Error)
+	if !ok {
+		return false
+	}
+	switch pe.Code {
+	case providers.ErrRateLimited, providers.ErrAuthError, providers.ErrModelUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+func AccountFailoverCooldown(err error) time.Duration {
+	pe, ok := err.(*providers.Error)
+	if !ok {
+		return 0
+	}
+	switch pe.Code {
+	case providers.ErrRateLimited:
+		return 2 * time.Minute
+	case providers.ErrAuthError:
+		return 15 * time.Minute
+	case providers.ErrModelUnavailable:
+		return 10 * time.Minute
+	default:
+		return 0
+	}
 }
 
 func (c *Client) defaultModel(role providers.Role) string {

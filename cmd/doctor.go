@@ -151,19 +151,27 @@ func errDetail(err error, fallback string) string {
 
 func newDoctorOpenAIClient(cwd string, cfg config.OpenAIProviderConfig, authMode string, storedCred *auth.Credential) *openai.Client {
 	client := openai.New(cfg)
+	var accountSession *auth.AccountSession
+	if authMode == "account" && strings.TrimSpace(os.Getenv(cfg.AccountTokenEnv)) == "" {
+		accountSession = auth.NewAccountSession(cwd, "openai")
+		client.SetAccountFailoverHandler(func(ctx context.Context, err error) (string, bool, error) {
+			return accountSession.Failover(ctx, openai.AccountFailoverCooldown(err), err.Error())
+		})
+		client.SetAccountSuccessHandler(func(ctx context.Context) {
+			accountSession.MarkSuccess(ctx)
+		})
+	}
 	client.SetTokenResolver(func(ctx context.Context) (string, error) {
-		_ = ctx
 		if authMode == "api_key" {
 			if storedCred != nil && strings.TrimSpace(storedCred.Key) != "" {
 				return strings.TrimSpace(storedCred.Key), nil
 			}
 			return "", nil
 		}
-		resolved, resolveErr := auth.ResolveAccountAccessToken(cwd, "openai")
-		if resolveErr != nil {
-			return "", resolveErr
+		if accountSession == nil {
+			return "", nil
 		}
-		return resolved, nil
+		return accountSession.ResolveToken(ctx)
 	})
 	return client
 }

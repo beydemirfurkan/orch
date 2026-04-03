@@ -70,6 +70,58 @@ func TestChatRetriesOnRateLimit(t *testing.T) {
 	}
 }
 
+func TestChatAccountModeFailsOverToSecondToken(t *testing.T) {
+	client := New(config.OpenAIProviderConfig{
+		AuthMode:        "account",
+		BaseURL:         "https://api.openai.com/v1",
+		AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
+		MaxRetries:      2,
+		Models:          config.ProviderRoleModels{Coder: "gpt-5.3-codex"},
+	})
+	firstToken := testAccountToken("acc-1")
+	secondToken := testAccountToken("acc-2")
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		return firstToken, nil
+	})
+	client.SetAccountFailoverHandler(func(ctx context.Context, err error) (string, bool, error) {
+		return secondToken, true, nil
+	})
+	markedSuccess := false
+	client.SetAccountSuccessHandler(func(ctx context.Context) {
+		markedSuccess = true
+	})
+
+	attempts := 0
+	doer := &inspectDoer{fn: func(req *http.Request) (*http.Response, error) {
+		attempts++
+		switch attempts {
+		case 1:
+			if got := req.Header.Get("ChatGPT-Account-Id"); got != "acc-1" {
+				return nil, fmt.Errorf("expected first account header acc-1, got %s", got)
+			}
+			return response(http.StatusTooManyRequests, `{"error":"rate"}`), nil
+		case 2:
+			if got := req.Header.Get("ChatGPT-Account-Id"); got != "acc-2" {
+				return nil, fmt.Errorf("expected second account header acc-2, got %s", got)
+			}
+			return response(http.StatusOK, `{"output_text":"done","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected attempt %d", attempts)
+		}
+	}}
+
+	out, err := client.chatWithDoer(context.Background(), providers.ChatRequest{Role: providers.RoleCoder}, doer)
+	if err != nil {
+		t.Fatalf("chat should succeed after failover: %v", err)
+	}
+	if out.ProviderMetadata["account_id"] != "acc-2" {
+		t.Fatalf("expected account_id metadata acc-2, got %q", out.ProviderMetadata["account_id"])
+	}
+	if !markedSuccess {
+		t.Fatalf("expected account success handler to be called")
+	}
+}
+
 func TestValidateMissingKey(t *testing.T) {
 	_ = os.Unsetenv("OPENAI_API_KEY")
 	client := New(config.OpenAIProviderConfig{APIKeyEnv: "OPENAI_API_KEY", BaseURL: "https://example.test/v1"})

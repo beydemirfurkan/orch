@@ -961,8 +961,17 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 	}
 
 	client := openai.New(cfg.Provider.OpenAI)
+	var accountSession *auth.AccountSession
+	if strings.ToLower(strings.TrimSpace(cfg.Provider.OpenAI.AuthMode)) == "account" && strings.TrimSpace(os.Getenv(cfg.Provider.OpenAI.AccountTokenEnv)) == "" {
+		accountSession = auth.NewAccountSession(cwd, "openai")
+		client.SetAccountFailoverHandler(func(ctx context.Context, err error) (string, bool, error) {
+			return accountSession.Failover(ctx, openai.AccountFailoverCooldown(err), err.Error())
+		})
+		client.SetAccountSuccessHandler(func(ctx context.Context) {
+			accountSession.MarkSuccess(ctx)
+		})
+	}
 	client.SetTokenResolver(func(ctx context.Context) (string, error) {
-		_ = ctx
 		mode := strings.ToLower(strings.TrimSpace(cfg.Provider.OpenAI.AuthMode))
 		if mode == "api_key" {
 			cred, credErr := auth.Get(cwd, "openai")
@@ -974,7 +983,10 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 			}
 			return "", nil
 		}
-		return auth.ResolveAccountAccessToken(cwd, "openai")
+		if accountSession == nil {
+			return "", nil
+		}
+		return accountSession.ResolveToken(ctx)
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Provider.OpenAI.TimeoutSeconds)*time.Second)

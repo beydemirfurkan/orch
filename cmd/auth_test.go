@@ -19,15 +19,27 @@ func TestAuthLoginAccountAndLogout(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	originalOAuthRunner := runOAuthLoginFlow
-	runOAuthLoginFlow = func(flow string) (auth.OAuthResult, error) {
-		return auth.OAuthResult{
+	results := []auth.OAuthResult{
+		{
 			AccessToken:  "token-123",
 			RefreshToken: "refresh-123",
 			ExpiresAt:    time.Now().UTC().Add(1 * time.Hour),
 			AccountID:    "acc-123",
 			Email:        "oauth@example.com",
-		}, nil
+		},
+		{
+			AccessToken:  "token-456",
+			RefreshToken: "refresh-456",
+			ExpiresAt:    time.Now().UTC().Add(2 * time.Hour),
+			AccountID:    "acc-456",
+			Email:        "second@example.com",
+		},
+	}
+	originalOAuthRunner := runOAuthLoginFlow
+	runOAuthLoginFlow = func(flow string) (auth.OAuthResult, error) {
+		result := results[0]
+		results = results[1:]
+		return result, nil
 	}
 	defer func() {
 		runOAuthLoginFlow = originalOAuthRunner
@@ -55,6 +67,47 @@ func TestAuthLoginAccountAndLogout(t *testing.T) {
 	}
 	if state.AccountID != "acc-123" {
 		t.Fatalf("expected stored account id")
+	}
+
+	authEmailFlag = "second@example.com"
+	if err := runAuthLogin(nil, nil); err != nil {
+		t.Fatalf("auth login second account: %v", err)
+	}
+
+	credentials, activeID, err := auth.List(repoRoot, "openai")
+	if err != nil {
+		t.Fatalf("list credentials: %v", err)
+	}
+	if len(credentials) != 2 {
+		t.Fatalf("expected 2 credentials, got %d", len(credentials))
+	}
+	if activeID != "acc-456" {
+		t.Fatalf("expected second account to become active, got %s", activeID)
+	}
+
+	if err := runAuthUse(nil, []string{"acc-123"}); err != nil {
+		t.Fatalf("auth use: %v", err)
+	}
+	active, err := auth.Get(repoRoot, "openai")
+	if err != nil {
+		t.Fatalf("get active credential: %v", err)
+	}
+	if active == nil || active.ID != "acc-123" {
+		t.Fatalf("expected acc-123 active, got %#v", active)
+	}
+
+	if err := runAuthRemove(nil, []string{"acc-456"}); err != nil {
+		t.Fatalf("auth remove: %v", err)
+	}
+	credentials, activeID, err = auth.List(repoRoot, "openai")
+	if err != nil {
+		t.Fatalf("list credentials after remove: %v", err)
+	}
+	if len(credentials) != 1 {
+		t.Fatalf("expected 1 credential after remove, got %d", len(credentials))
+	}
+	if activeID != "acc-123" {
+		t.Fatalf("expected acc-123 to remain active, got %s", activeID)
 	}
 
 	if err := runAuthLogout(nil, nil); err != nil {

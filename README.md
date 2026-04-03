@@ -327,7 +327,13 @@ Or account mode (OAuth):
 
 ```bash
 ./orch auth login openai --method account --flow auto
+./orch auth login openai --method account --flow auto   # add another account
+./orch auth list
+./orch auth use <credential-id>
+./orch auth remove <credential-id>
 ```
+
+When multiple OpenAI OAuth accounts are stored, Orch keeps one active account and can fail over to the next local account when the active one is rate-limited or rejected.
 
 Validate runtime readiness:
 
