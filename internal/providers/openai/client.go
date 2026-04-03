@@ -140,7 +140,10 @@ func (c *Client) chatWithDoer(ctx context.Context, req providers.ChatRequest, do
 
 	payload := map[string]any{
 		"model": model,
-		"input": buildInput(req.SystemPrompt, req.UserPrompt),
+		"input": req.UserPrompt,
+	}
+	if strings.TrimSpace(req.SystemPrompt) != "" {
+		payload["instructions"] = req.SystemPrompt
 	}
 	if effort := strings.TrimSpace(req.ReasoningEffort); effort != "" {
 		payload["reasoning"] = map[string]any{"effort": effort}
@@ -236,25 +239,6 @@ func (c *Client) defaultModel(role providers.Role) string {
 	default:
 		return ""
 	}
-}
-
-func buildInput(system, user string) []map[string]any {
-	parts := make([]map[string]any, 0, 2)
-	if strings.TrimSpace(system) != "" {
-		parts = append(parts, map[string]any{
-			"role": "system",
-			"content": []map[string]string{
-				{"type": "input_text", "text": system},
-			},
-		})
-	}
-	parts = append(parts, map[string]any{
-		"role": "user",
-		"content": []map[string]string{
-			{"type": "input_text", "text": user},
-		},
-	})
-	return parts
 }
 
 type responsesAPI struct {

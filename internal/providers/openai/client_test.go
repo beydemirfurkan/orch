@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -114,7 +115,7 @@ func TestResolveAuthTokenAccountModeWithResolver(t *testing.T) {
 	}
 }
 
-func TestChatAccountModeUsesCodexEndpointAndAccountHeader(t *testing.T) {
+func TestChatAccountModeUsesCodexEndpointAccountHeaderAndInstructions(t *testing.T) {
 	client := New(config.OpenAIProviderConfig{
 		AuthMode:        "account",
 		BaseURL:         "https://api.openai.com/v1",
@@ -137,10 +138,28 @@ func TestChatAccountModeUsesCodexEndpointAndAccountHeader(t *testing.T) {
 		if got := req.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
 			return nil, fmt.Errorf("missing auth header")
 		}
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
+		payload := map[string]any{}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("parse request body: %w", err)
+		}
+		if got := payload["instructions"]; got != "You are a constrained coding agent." {
+			return nil, fmt.Errorf("unexpected instructions: %#v", got)
+		}
+		if got := payload["input"]; got != "Return a diff." {
+			return nil, fmt.Errorf("unexpected input: %#v", got)
+		}
 		return response(http.StatusOK, `{"output_text":"done","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), nil
 	}}
 
-	out, err := client.chatWithDoer(context.Background(), providers.ChatRequest{Role: providers.RoleCoder}, doer)
+	out, err := client.chatWithDoer(context.Background(), providers.ChatRequest{
+		Role:         providers.RoleCoder,
+		SystemPrompt: "You are a constrained coding agent.",
+		UserPrompt:   "Return a diff.",
+	}, doer)
 	if err != nil {
 		t.Fatalf("chat error: %v", err)
 	}
