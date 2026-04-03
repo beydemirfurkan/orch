@@ -31,7 +31,7 @@ type interactiveModel struct {
 	input    textarea.Model
 	spinner  spinner.Model
 
-	logs    []string
+	entries []chatEntry
 	running bool
 	width   int
 	height  int
@@ -52,9 +52,27 @@ type interactiveModel struct {
 	pipelineStage string
 	activeAgent   string
 	lastRunCost   string
+	streamingText string
+	streamSource  <-chan tea.Msg
 
 	// New modal selection state
 	activeModal *modalState
+}
+
+type chatEntryKind string
+
+const (
+	chatEntryUser      chatEntryKind = "user"
+	chatEntryAssistant chatEntryKind = "assistant"
+	chatEntryNote      chatEntryKind = "note"
+	chatEntryError     chatEntryKind = "error"
+	chatEntrySpacer    chatEntryKind = "spacer"
+)
+
+type chatEntry struct {
+	Kind  chatEntryKind
+	Title string
+	Lines []string
 }
 
 type modalType int
@@ -118,25 +136,39 @@ var allCommands = []commandEntry{
 }
 
 type theme struct {
-	header      lipgloss.Style
-	accent      lipgloss.Style
-	muted       lipgloss.Style
-	success     lipgloss.Style
-	warning     lipgloss.Style
-	error       lipgloss.Style
-	panel       lipgloss.Style
-	command     lipgloss.Style
-	timeline    lipgloss.Style
-	statusRun   lipgloss.Style
-	statusIdle  lipgloss.Style
-	chip        lipgloss.Style
-	chipMuted   lipgloss.Style
-	composerTag lipgloss.Style
-	userCard    lipgloss.Style
-	assistant   lipgloss.Style
-	noteCard    lipgloss.Style
-	errorCard   lipgloss.Style
-	footer      lipgloss.Style
+	header         lipgloss.Style
+	accent         lipgloss.Style
+	muted          lipgloss.Style
+	success        lipgloss.Style
+	warning        lipgloss.Style
+	error          lipgloss.Style
+	panel          lipgloss.Style
+	topbar         lipgloss.Style
+	topbarBrand    lipgloss.Style
+	topbarMeta     lipgloss.Style
+	bodyBox        lipgloss.Style
+	composerBox    lipgloss.Style
+	helperBar      lipgloss.Style
+	helperKey      lipgloss.Style
+	helperText     lipgloss.Style
+	codeBlock      lipgloss.Style
+	codeText       lipgloss.Style
+	bullet         lipgloss.Style
+	blockquote     lipgloss.Style
+	command        lipgloss.Style
+	timeline       lipgloss.Style
+	statusRun      lipgloss.Style
+	statusIdle     lipgloss.Style
+	chip           lipgloss.Style
+	chipMuted      lipgloss.Style
+	composerTag    lipgloss.Style
+	userLabel      lipgloss.Style
+	assistantLabel lipgloss.Style
+	userCard       lipgloss.Style
+	assistant      lipgloss.Style
+	noteCard       lipgloss.Style
+	errorCard      lipgloss.Style
+	footer         lipgloss.Style
 
 	menuBox      lipgloss.Style
 	menuItem     lipgloss.Style
@@ -150,13 +182,57 @@ type theme struct {
 }
 
 var dracula = theme{
-	header:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0")),
-	accent:      lipgloss.NewStyle().Foreground(lipgloss.Color("#7DD3FC")),
-	muted:       lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")),
-	success:     lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399")),
-	warning:     lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")),
-	error:       lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")),
-	panel:       lipgloss.NewStyle().Padding(0, 1),
+	header:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E2E8F0")),
+	accent:  lipgloss.NewStyle().Foreground(lipgloss.Color("#7DD3FC")),
+	muted:   lipgloss.NewStyle().Foreground(lipgloss.Color("#64748B")),
+	success: lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399")),
+	warning: lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")),
+	error:   lipgloss.NewStyle().Foreground(lipgloss.Color("#F87171")),
+	panel:   lipgloss.NewStyle().Padding(0, 1),
+	topbar: lipgloss.NewStyle().
+		BorderBottom(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("#1F2937")).
+		Padding(0, 1),
+	topbarBrand: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#F8FAFC")).
+		Bold(true),
+	topbarMeta: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#94A3B8")),
+	bodyBox: lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#1E293B")).
+		Background(lipgloss.Color("#020617")).
+		Padding(0, 1),
+	composerBox: lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#1D4ED8")).
+		Background(lipgloss.Color("#020617")).
+		Padding(0, 1),
+	helperBar: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#64748B")).
+		Padding(0, 1),
+	helperKey: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#E2E8F0")).
+		Background(lipgloss.Color("#0F172A")).
+		Padding(0, 1),
+	helperText: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#64748B")),
+	codeBlock: lipgloss.NewStyle().
+		Background(lipgloss.Color("#020617")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#334155")).
+		Padding(0, 1),
+	codeText: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#BFDBFE")),
+	bullet: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7DD3FC")),
+	blockquote: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#94A3B8")).
+		BorderLeft(true).
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("#334155")).
+		PaddingLeft(1),
 	command:     lipgloss.NewStyle().Foreground(lipgloss.Color("#E2E8F0")),
 	timeline:    lipgloss.NewStyle().Foreground(lipgloss.Color("#93C5FD")),
 	statusRun:   lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Bold(true),
@@ -164,21 +240,39 @@ var dracula = theme{
 	chip:        lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Background(lipgloss.Color("#0F172A")).Padding(0, 1),
 	chipMuted:   lipgloss.NewStyle().Foreground(lipgloss.Color("#475569")).Background(lipgloss.Color("#0B1220")).Padding(0, 1),
 	composerTag: lipgloss.NewStyle().Foreground(lipgloss.Color("#38BDF8")).Bold(true),
+	userLabel: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#7DD3FC")).
+		Bold(true),
+	assistantLabel: lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#E2E8F0")).
+		Bold(true),
 	userCard: lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#E2E8F0")).
-		Padding(0, 0, 0, 1).
+		Background(lipgloss.Color("#082F49")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#0284C7")).
+		Padding(0, 1).
 		MarginBottom(1),
 	assistant: lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#94A3B8")).
-		Padding(0, 0, 0, 1).
+		Foreground(lipgloss.Color("#CBD5E1")).
+		Background(lipgloss.Color("#0F172A")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#334155")).
+		Padding(0, 1).
 		MarginBottom(1),
 	noteCard: lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#CBD5E1")).
-		Padding(0, 0, 0, 1).
+		Background(lipgloss.Color("#111827")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#92400E")).
+		Padding(0, 1).
 		MarginBottom(1),
 	errorCard: lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#FECACA")).
-		Padding(0, 0, 0, 1).
+		Background(lipgloss.Color("#1F1720")).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#991B1B")).
+		Padding(0, 1).
 		MarginBottom(1),
 	footer: lipgloss.NewStyle().Foreground(lipgloss.Color("#475569")),
 	menuBox: lipgloss.NewStyle().
@@ -227,10 +321,16 @@ type chatExecutionResult struct {
 }
 
 type chatExecutionMsg struct {
-	displayPrompt string
-	inputNote     string
-	result        *chatExecutionResult
-	err           error
+	result *chatExecutionResult
+	err    error
+}
+
+type chatStreamStartMsg struct {
+	stream <-chan tea.Msg
+}
+
+type chatStreamChunkMsg struct {
+	text string
 }
 
 func startInteractiveShell(resumeID string) error {
@@ -242,7 +342,7 @@ func startInteractiveShell(resumeID string) error {
 
 func newInteractiveModel(resumeID string) *interactiveModel {
 	input := textarea.New()
-	input.Placeholder = "Ask Orch anything..."
+	input.Placeholder = "Message Orch..."
 	input.Prompt = ""
 
 	input.FocusedStyle.CursorLine = lipgloss.NewStyle()
@@ -269,8 +369,6 @@ func newInteractiveModel(resumeID string) *interactiveModel {
 
 	cwd, _ := getWorkingDirectory()
 
-	// Initialize with empty logs.
-	lines := []string{}
 	vp.SetContent("")
 
 	providerLine, authLine, modelsLine := readRuntimeStatus()
@@ -279,7 +377,7 @@ func newInteractiveModel(resumeID string) *interactiveModel {
 		viewport:     vp,
 		input:        input,
 		spinner:      sp,
-		logs:         lines,
+		entries:      []chatEntry{},
 		providerLine: providerLine,
 		authLine:     authLine,
 		modelsLine:   modelsLine,
@@ -307,10 +405,10 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.Width = msg.Width - 4
 		m.viewport.Height = max(5, msg.Height-headerHeight-inputHeight-footerHeight)
 
-		contentWidth := max(40, min(80, m.viewport.Width))
+		contentWidth := max(52, min(96, m.viewport.Width))
 		m.input.SetWidth(contentWidth)
 		m.input.SetHeight(max(2, inputHeight-2))
-		m.viewport.SetContent(strings.Join(m.logs, "\n"))
+		m.refreshViewportContent()
 		m.viewport.GotoBottom()
 		return m, nil
 
@@ -318,13 +416,17 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.running {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
+			m.refreshViewportContent()
 			return m, cmd
 		}
 
 	case commandResultMsg:
 		m.running = false
+		m.streamingText = ""
+		m.streamSource = nil
+		m.activeAgent = ""
+		m.pipelineStage = ""
 		m.providerLine, m.authLine, m.modelsLine = readRuntimeStatus()
-		m.appendUserMessage(msg.command)
 		if strings.TrimSpace(msg.output) != "" {
 			m.appendAssistantMessage("Orch", strings.Split(strings.TrimRight(msg.output, "\n"), "\n"))
 		}
@@ -337,10 +439,11 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case runExecutionMsg:
 		m.running = false
+		m.streamingText = ""
+		m.streamSource = nil
 		m.activeAgent = ""
 		m.pipelineStage = ""
 		m.providerLine, m.authLine, m.modelsLine = readRuntimeStatus()
-		m.appendUserMessage(msg.command)
 		if msg.err != nil {
 			m.appendErrorMessage(fmt.Sprintf("error: %v", msg.err))
 			m.appendSpacer()
@@ -356,20 +459,36 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 
+	case chatStreamStartMsg:
+		m.streamSource = msg.stream
+		return m, waitForChatStreamCmd(msg.stream)
+
+	case chatStreamChunkMsg:
+		m.streamingText += msg.text
+		m.refreshViewportContent()
+		m.viewport.GotoBottom()
+		if m.streamSource != nil {
+			return m, waitForChatStreamCmd(m.streamSource)
+		}
+		return m, nil
+
 	case chatExecutionMsg:
 		m.running = false
+		m.streamSource = nil
+		m.activeAgent = ""
+		m.pipelineStage = ""
 		m.providerLine, m.authLine, m.modelsLine = readRuntimeStatus()
-		m.appendUserMessage(msg.displayPrompt)
-		if strings.TrimSpace(msg.inputNote) != "" {
-			m.appendNoteMessage("Input Transform", []string{msg.inputNote})
-		}
 		if msg.err != nil {
+			m.streamingText = ""
+			m.refreshViewportContent()
 			m.appendErrorMessage(fmt.Sprintf("error: %v", msg.err))
 			m.appendSpacer()
 			m.viewport.GotoBottom()
 			return m, nil
 		}
 		if msg.result != nil {
+			m.streamingText = ""
+			m.refreshViewportContent()
 			m.appendAssistantMessage("Orch", strings.Split(strings.TrimSpace(msg.result.Text), "\n"))
 			if strings.TrimSpace(msg.result.Warning) != "" {
 				m.appendNoteMessage("Note", []string{msg.result.Warning})
@@ -422,8 +541,9 @@ func (m *interactiveModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "ctrl+l":
-			m.logs = []string{}
-			m.viewport.SetContent("")
+			m.entries = []chatEntry{}
+			m.streamingText = ""
+			m.refreshViewportContent()
 			return m, nil
 		case "shift+enter", "alt+enter":
 			if m.running {
@@ -528,8 +648,9 @@ func (m *interactiveModel) handleCommand() (tea.Model, tea.Cmd) {
 	}
 
 	if raw == "/clear" {
-		m.logs = []string{}
-		m.viewport.SetContent("")
+		m.entries = []chatEntry{}
+		m.streamingText = ""
+		m.refreshViewportContent()
 		return m, nil
 	}
 
@@ -616,18 +737,32 @@ func (m *interactiveModel) handleCommand() (tea.Model, tea.Cmd) {
 	}
 
 	// If transitioning from empty state to active state, resize the input to correct content width
-	if len(m.logs) == 0 {
-		contentWidth := max(40, min(80, m.viewport.Width))
+	if len(m.entries) == 0 {
+		contentWidth := max(52, min(96, m.viewport.Width))
 		m.input.SetWidth(contentWidth)
 	}
 
 	var cmds []tea.Cmd
+	if dispatch.Args[0] != "chat" {
+		m.appendUserMessage(dispatch.DisplayInput)
+	}
 	m.running = true
+	m.activeAgent = "orch"
+	m.pipelineStage = "chat"
 	if len(dispatch.Args) > 1 && dispatch.Args[0] == "run" {
+		m.activeAgent = "pipeline"
+		m.pipelineStage = "run"
 		cmds = append(cmds, m.spinner.Tick, runInProcessCmd(dispatch.Args[1]))
 	} else if len(dispatch.Args) > 1 && dispatch.Args[0] == "chat" {
-		cmds = append(cmds, m.spinner.Tick, runInProcessChatCmd(dispatch.DisplayInput, dispatch.Args[1], dispatch.InputNote))
+		m.streamingText = ""
+		m.appendUserMessage(dispatch.DisplayInput)
+		if strings.TrimSpace(dispatch.InputNote) != "" {
+			m.appendNoteMessage("Input Transform", []string{dispatch.InputNote})
+		}
+		cmds = append(cmds, m.spinner.Tick, runInProcessChatCmd(dispatch.Args[1]))
 	} else {
+		m.activeAgent = dispatch.Args[0]
+		m.pipelineStage = dispatch.Args[0]
 		cmds = append(cmds, m.spinner.Tick, runCLICommandCmd(dispatch.Args))
 	}
 	return m, tea.Batch(cmds...)
@@ -638,7 +773,7 @@ func (m *interactiveModel) View() string {
 	shellHeight := max(10, m.height)
 
 	var bg string
-	if len(m.logs) == 0 {
+	if len(m.entries) == 0 {
 		bg = m.renderEmptyState(shellWidth, shellHeight)
 	} else {
 		providerState := "unknown"
@@ -651,7 +786,7 @@ func (m *interactiveModel) View() string {
 		}
 		modelSummary := shortModelsLine(m.modelsLine)
 
-		contentWidth := max(60, min(80, m.viewport.Width))
+		contentWidth := max(68, min(96, m.viewport.Width))
 
 		headerParts := fmt.Sprintf("%s • %s • %s", providerState, authState, modelSummary)
 		if m.lastRunCost != "" {
@@ -660,10 +795,16 @@ func (m *interactiveModel) View() string {
 		if m.pipelineStage != "" && m.running {
 			headerParts += " • " + dracula.statusRun.Render(m.pipelineStage)
 		}
-		headerInfo := dracula.muted.Render(headerParts)
-		header := lipgloss.PlaceHorizontal(m.viewport.Width, lipgloss.Right, headerInfo) + "\n"
+		brand := dracula.topbarBrand.Render("Orch Chat")
+		meta := dracula.topbarMeta.Render(shortInteractivePath(m.cwd) + "  ·  " + headerParts)
+		headerInner := lipgloss.JoinHorizontal(lipgloss.Left,
+			brand,
+			strings.Repeat(" ", max(1, contentWidth-lipgloss.Width(brand)-lipgloss.Width(meta))),
+			meta,
+		)
+		header := lipgloss.PlaceHorizontal(m.viewport.Width, lipgloss.Center, dracula.topbar.Width(contentWidth).Render(headerInner)) + "\n"
 
-		bodyContent := dracula.panel.Width(contentWidth).Render(m.viewport.View())
+		bodyContent := dracula.bodyBox.Width(contentWidth).Render(m.viewport.View())
 		body := lipgloss.PlaceHorizontal(m.viewport.Width, lipgloss.Center, bodyContent)
 
 		var composerInner string
@@ -676,7 +817,8 @@ func (m *interactiveModel) View() string {
 		} else {
 			composerInner = m.input.View()
 		}
-		composerContent := dracula.panel.Width(contentWidth).Render(composerInner)
+		helper := renderComposerHelper()
+		composerContent := dracula.composerBox.Width(contentWidth).Render(composerInner + "\n" + helper)
 
 		var suggestionsView string
 		if m.showSuggestions {
@@ -736,10 +878,9 @@ func (m *interactiveModel) renderEmptyState(width, height int) string {
 	statusStr := dracula.muted.Render(fmt.Sprintf("%s • %s", providerState, authState))
 	statsStr := dracula.muted.Render(modelSummary)
 
-	contentWidth := max(40, min(80, width))
+	contentWidth := max(52, min(96, width-4))
 
-	// The composer wrapping
-	inputBox := dracula.panel.Width(contentWidth).Render(m.input.View())
+	inputBox := dracula.composerBox.Width(contentWidth).Render(m.input.View() + "\n" + renderComposerHelper())
 
 	// Suggestions overlay
 	var suggestionsView string
@@ -759,7 +900,12 @@ func (m *interactiveModel) renderEmptyState(width, height int) string {
 		suggestionsView = dracula.panel.Width(contentWidth).Render(suggestionsContent)
 	}
 
-	helpLine := dracula.warning.Render("• Tip") + dracula.muted.Render(" Use /help for commands. Plain text for chat. /run for tasks.")
+	quickLine := lipgloss.JoinHorizontal(lipgloss.Left,
+		dracula.helperKey.Render("/help"), dracula.helperText.Render(" commands  "),
+		dracula.helperKey.Render("/run"), dracula.helperText.Render(" tasks  "),
+		dracula.helperKey.Render("/provider"), dracula.helperText.Render(" setup"),
+	)
+	helpLine := dracula.warning.Render("Tip") + dracula.muted.Render(" Plain text starts chat. Use /run for agent workflow.")
 
 	// Assemble the center block
 	centerItems := []string{
@@ -773,7 +919,9 @@ func (m *interactiveModel) renderEmptyState(width, height int) string {
 		lipgloss.PlaceHorizontal(contentWidth, lipgloss.Center, inputBox),
 		"\n",
 		lipgloss.PlaceHorizontal(contentWidth, lipgloss.Center, statusStr+"  |  "+statsStr),
-		"\n\n\n",
+		"\n",
+		lipgloss.PlaceHorizontal(contentWidth, lipgloss.Center, quickLine),
+		"\n\n",
 		lipgloss.PlaceHorizontal(contentWidth, lipgloss.Center, helpLine),
 	)
 
@@ -833,51 +981,227 @@ func (m *interactiveModel) renderModal(width, height int) string {
 	return dracula.modalBox.Width(modalWidth).Render(strings.Join(lines, "\n"))
 }
 
-func (m *interactiveModel) appendLog(line string) {
-	m.logs = append(m.logs, line)
-	m.viewport.SetContent(strings.Join(m.logs, "\n"))
+func (m *interactiveModel) appendEntry(entry chatEntry) {
+	m.entries = append(m.entries, entry)
+	m.refreshViewportContent()
 	m.viewport.GotoBottom()
 }
 
+func (m *interactiveModel) refreshViewportContent() {
+	rendered := make([]string, 0, len(m.entries)+2)
+	for _, entry := range m.entries {
+		piece := strings.TrimRight(m.renderEntry(entry), "\n")
+		if piece == "" {
+			rendered = append(rendered, "")
+			continue
+		}
+		rendered = append(rendered, piece)
+	}
+	content := strings.Join(rendered, "\n")
+	if strings.TrimSpace(m.streamingText) != "" {
+		live := m.renderEntry(chatEntry{Kind: chatEntryAssistant, Title: "Orch", Lines: []string{m.streamingText}})
+		if strings.TrimSpace(content) == "" {
+			content = live
+		} else {
+			content += "\n" + live
+		}
+	}
+	activity := strings.TrimSpace(m.renderActivityCard())
+	if activity != "" {
+		if strings.TrimSpace(content) == "" {
+			content = activity
+		} else {
+			content += "\n\n" + activity
+		}
+	}
+	m.viewport.SetContent(content)
+}
+
 func (m *interactiveModel) appendSpacer() {
-	m.appendLog("")
+	m.appendEntry(chatEntry{Kind: chatEntrySpacer})
 }
 
 func (m *interactiveModel) appendUserMessage(command string) {
-	// A simple cyan dot indicator for user messages
-	indicator := dracula.accent.Render("● ")
-	body := indicator + dracula.header.Render("You") + "\n" + dracula.command.Render(command)
-	card := dracula.userCard.Width(m.cardWidth()).Render(body)
-	m.appendLog(card)
+	m.appendEntry(chatEntry{Kind: chatEntryUser, Title: "You", Lines: []string{command}})
 }
 
 func (m *interactiveModel) appendAssistantMessage(title string, lines []string) {
-	indicator := dracula.muted.Render("○ ")
-
-	header := ""
-	if title == "Orch" || title == "Output" || title == "Commands" {
-		header = dracula.header.Render("Orch Output") + "\n"
-	} else {
-		header = dracula.header.Render(title) + "\n"
-	}
-
-	m.appendLog(dracula.assistant.Width(m.cardWidth()).Render(indicator + header + strings.Join(lines, "\n")))
+	m.appendEntry(chatEntry{Kind: chatEntryAssistant, Title: title, Lines: lines})
 }
 
 func (m *interactiveModel) appendNoteMessage(title string, lines []string) {
-	body := make([]string, 0, len(lines)+1)
-	body = append(body, dracula.warning.Render("Note")+"  "+dracula.header.Render(title))
-	body = append(body, lines...)
-	m.appendLog(dracula.noteCard.Width(m.cardWidth()).Render(strings.Join(body, "\n")))
+	m.appendEntry(chatEntry{Kind: chatEntryNote, Title: title, Lines: lines})
 }
 
 func (m *interactiveModel) appendErrorMessage(message string) {
-	body := dracula.error.Render("Error") + "\n" + message
-	m.appendLog(dracula.errorCard.Width(m.cardWidth()).Render(body))
+	m.appendEntry(chatEntry{Kind: chatEntryError, Title: "Error", Lines: []string{message}})
 }
 
 func (m interactiveModel) cardWidth() int {
-	return m.viewport.Width - 4
+	return max(48, m.viewport.Width-2)
+}
+
+func (m interactiveModel) bubbleWidth() int {
+	return max(36, min(72, m.cardWidth()-8))
+}
+
+func renderComposerHelper() string {
+	parts := []string{
+		dracula.helperKey.Render("Enter"), dracula.helperText.Render(" send  "),
+		dracula.helperKey.Render("Ctrl+J"), dracula.helperText.Render(" newline  "),
+		dracula.helperKey.Render("/"), dracula.helperText.Render(" commands  "),
+		dracula.helperKey.Render("Esc"), dracula.helperText.Render(" clear"),
+	}
+	return dracula.helperBar.Render(lipgloss.JoinHorizontal(lipgloss.Left, parts...))
+}
+
+func (m *interactiveModel) renderEntry(entry chatEntry) string {
+	switch entry.Kind {
+	case chatEntrySpacer:
+		return ""
+	case chatEntryUser:
+		body := dracula.userLabel.Render(defaultEntryTitle(entry, "You")) + "\n" + renderMarkdownLines(entry.Lines)
+		bubble := dracula.userCard.Width(m.bubbleWidth()).Render(body)
+		return lipgloss.PlaceHorizontal(m.cardWidth(), lipgloss.Right, bubble)
+	case chatEntryAssistant:
+		body := dracula.assistantLabel.Render(defaultEntryTitle(entry, "Orch")) + "\n" + renderMarkdownLines(entry.Lines)
+		bubble := dracula.assistant.Width(m.bubbleWidth()).Render(body)
+		return lipgloss.PlaceHorizontal(m.cardWidth(), lipgloss.Left, bubble)
+	case chatEntryNote:
+		head := dracula.warning.Render("Note") + "  " + dracula.header.Render(defaultEntryTitle(entry, "Note"))
+		body := head + "\n" + renderMarkdownLines(entry.Lines)
+		bubble := dracula.noteCard.Width(m.bubbleWidth()).Render(body)
+		return lipgloss.PlaceHorizontal(m.cardWidth(), lipgloss.Left, bubble)
+	case chatEntryError:
+		head := dracula.error.Render(defaultEntryTitle(entry, "Error"))
+		body := head + "\n" + renderMarkdownLines(entry.Lines)
+		bubble := dracula.errorCard.Width(m.bubbleWidth()).Render(body)
+		return lipgloss.PlaceHorizontal(m.cardWidth(), lipgloss.Left, bubble)
+	default:
+		return strings.Join(entry.Lines, "\n")
+	}
+}
+
+func (m *interactiveModel) renderActivityCard() string {
+	if !m.running {
+		return ""
+	}
+	lines := []string{}
+	switch m.pipelineStage {
+	case "chat":
+		state := "sending"
+		if strings.TrimSpace(m.streamingText) != "" {
+			state = "streaming"
+		}
+		lines = append(lines,
+			dracula.assistantLabel.Render("Live Response"),
+			fmt.Sprintf("%s  send prompt", timelineMarker(state == "sending", state != "sending")),
+			fmt.Sprintf("%s  stream tokens", timelineMarker(state == "streaming", state == "streaming")),
+			fmt.Sprintf("%s  persist session", timelineMarker(false, false)),
+		)
+	case "run":
+		lines = append(lines,
+			dracula.assistantLabel.Render("Pipeline Active"),
+			fmt.Sprintf("%s  analyze", timelineMarker(true, true)),
+			fmt.Sprintf("%s  plan", timelineMarker(false, false)),
+			fmt.Sprintf("%s  build", timelineMarker(false, false)),
+			fmt.Sprintf("%s  test", timelineMarker(false, false)),
+			fmt.Sprintf("%s  review", timelineMarker(false, false)),
+		)
+	default:
+		label := m.activeAgent
+		if label == "" {
+			label = "working"
+		}
+		lines = append(lines, dracula.assistantLabel.Render("Activity"), m.spinner.View()+" "+label)
+	}
+	bubble := dracula.noteCard.Width(m.bubbleWidth()).Render(strings.Join(lines, "\n"))
+	return lipgloss.PlaceHorizontal(m.cardWidth(), lipgloss.Left, bubble)
+}
+
+func defaultEntryTitle(entry chatEntry, fallback string) string {
+	title := strings.TrimSpace(entry.Title)
+	if title == "" || title == "Output" {
+		return fallback
+	}
+	if fallback == "Orch" && title == "Commands" {
+		return "Commands"
+	}
+	return title
+}
+
+func timelineMarker(active, done bool) string {
+	switch {
+	case active:
+		return dracula.statusRun.Render("●")
+	case done:
+		return dracula.success.Render("●")
+	default:
+		return dracula.muted.Render("○")
+	}
+}
+
+func renderMarkdownLines(lines []string) string {
+	joined := strings.Join(lines, "\n")
+	return renderMarkdownText(joined)
+}
+
+func renderMarkdownText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	parts := []string{}
+	inCode := false
+	codeLines := []string{}
+	for _, raw := range lines {
+		trimmed := strings.TrimSpace(raw)
+		if strings.HasPrefix(trimmed, "```") {
+			if inCode {
+				parts = append(parts, dracula.codeBlock.Render(dracula.codeText.Render(strings.Join(codeLines, "\n"))))
+				codeLines = nil
+				inCode = false
+			} else {
+				inCode = true
+			}
+			continue
+		}
+		if inCode {
+			codeLines = append(codeLines, raw)
+			continue
+		}
+		switch {
+		case trimmed == "":
+			parts = append(parts, "")
+		case strings.HasPrefix(trimmed, "#"):
+			heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
+			parts = append(parts, dracula.header.Render(heading))
+		case strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* "):
+			parts = append(parts, dracula.bullet.Render("•")+" "+renderInlineMarkdown(strings.TrimSpace(trimmed[2:])))
+		case strings.HasPrefix(trimmed, "> "):
+			parts = append(parts, dracula.blockquote.Render(renderInlineMarkdown(strings.TrimSpace(trimmed[2:]))))
+		default:
+			parts = append(parts, renderInlineMarkdown(raw))
+		}
+	}
+	if inCode && len(codeLines) > 0 {
+		parts = append(parts, dracula.codeBlock.Render(dracula.codeText.Render(strings.Join(codeLines, "\n"))))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func renderInlineMarkdown(text string) string {
+	parts := strings.Split(text, "`")
+	if len(parts) == 1 {
+		return text
+	}
+	built := strings.Builder{}
+	for idx, part := range parts {
+		if idx%2 == 1 {
+			built.WriteString(dracula.helperKey.Render(part))
+		} else {
+			built.WriteString(part)
+		}
+	}
+	return built.String()
 }
 
 func parseInteractiveInput(input string) ([]string, error) {
@@ -946,19 +1270,39 @@ func runInProcessCmd(task string) tea.Cmd {
 	}
 }
 
-func runInProcessChatCmd(displayPrompt, prompt, inputNote string) tea.Cmd {
+func runInProcessChatCmd(prompt string) tea.Cmd {
 	return func() tea.Msg {
-		result, err := executeChatPrompt(prompt)
-		return chatExecutionMsg{
-			displayPrompt: displayPrompt,
-			inputNote:     inputNote,
-			result:        result,
-			err:           err,
-		}
+		stream := make(chan tea.Msg, 32)
+		go executeChatPromptStream(prompt, stream)
+		return chatStreamStartMsg{stream: stream}
 	}
 }
 
-func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
+func waitForChatStreamCmd(stream <-chan tea.Msg) tea.Cmd {
+	if stream == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		msg, ok := <-stream
+		if !ok {
+			return chatExecutionMsg{}
+		}
+		return msg
+	}
+}
+
+func executeChatPromptStream(prompt string, stream chan<- tea.Msg) {
+	defer close(stream)
+	result, err := executeChatPromptStreaming(prompt, func(text string) {
+		if strings.TrimSpace(text) == "" {
+			return
+		}
+		stream <- chatStreamChunkMsg{text: text}
+	})
+	stream <- chatExecutionMsg{result: result, err: err}
+}
+
+func executeChatPromptStreaming(prompt string, onDelta func(string)) (*chatExecutionResult, error) {
 	cwd, err := getWorkingDirectory()
 	if err != nil {
 		return nil, err
@@ -1036,12 +1380,60 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.Provider.OpenAI.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	resp, chatErr := client.Chat(ctx, providers.ChatRequest{
+	chatReq := providers.ChatRequest{
 		Role:         providers.RoleCoder,
 		Model:        cfg.Provider.OpenAI.Models.Coder,
 		SystemPrompt: "You are Orch interactive assistant. Be concise and practical.",
 		UserPrompt:   prompt,
-	})
+	}
+
+	events, errCh := client.Stream(ctx, chatReq)
+	var responseBuilder strings.Builder
+	finishReason := "stop"
+	for events != nil || errCh != nil {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			switch event.Type {
+			case "token", "text":
+				responseBuilder.WriteString(event.Text)
+				if onDelta != nil {
+					onDelta(event.Text)
+				}
+			case "done":
+				if reason := strings.TrimSpace(event.Metadata["finish_reason"]); reason != "" {
+					finishReason = reason
+				}
+			}
+		case chatErr, ok := <-errCh:
+			if !ok {
+				errCh = nil
+				continue
+			}
+			if chatErr != nil {
+				errorPayload, _ := json.Marshal(map[string]string{"message": chatErr.Error()})
+				_, _ = svc.AppendMessage(session.MessageInput{
+					SessionID:    sessionCtx.Session.ID,
+					Role:         "assistant",
+					ParentID:     userMsg.Message.ID,
+					ProviderID:   cfg.Provider.Default,
+					ModelID:      cfg.Provider.OpenAI.Models.Coder,
+					FinishReason: "error",
+					Error:        chatErr.Error(),
+				}, []storage.SessionPart{{Type: "error", Payload: string(errorPayload)}})
+				return nil, fmt.Errorf("provider chat failed: %w", chatErr)
+			}
+		}
+	}
+
+	resp := providers.ChatResponse{
+		Text:         strings.TrimSpace(responseBuilder.String()),
+		FinishReason: finishReason,
+	}
+	chatErr := error(nil)
 	if chatErr != nil {
 		errorPayload, _ := json.Marshal(map[string]string{"message": chatErr.Error()})
 		_, _ = svc.AppendMessage(session.MessageInput{
@@ -1075,7 +1467,7 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 		ParentID:     userMsg.Message.ID,
 		ProviderID:   cfg.Provider.Default,
 		ModelID:      cfg.Provider.OpenAI.Models.Coder,
-		FinishReason: "stop",
+		FinishReason: finishReason,
 		Text:         strings.TrimSpace(resp.Text),
 	})
 	warning := ""
@@ -1111,6 +1503,10 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 	}
 
 	return &chatExecutionResult{Text: strings.TrimSpace(resp.Text), Warning: warning}, nil
+}
+
+func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
+	return executeChatPromptStreaming(prompt, nil)
 }
 
 func helpText() string {
