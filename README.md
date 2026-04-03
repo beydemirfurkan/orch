@@ -210,7 +210,25 @@ Default policy:
 
 ## Installation
 
-Requirements:
+Global install via npm:
+
+```bash
+npm i -g orch
+```
+
+Installer behavior:
+- first tries to download a prebuilt release binary for your platform
+- falls back to `go build` if no release asset is available and Go is installed locally
+
+Published release assets are expected to look like this:
+- `orch-darwin-arm64`
+- `orch-darwin-x64`
+- `orch-linux-arm64`
+- `orch-linux-x64`
+- `orch-windows-arm64.exe`
+- `orch-windows-x64.exe`
+
+Requirements for source-build fallback:
 - Go `1.25+`
 
 Build:

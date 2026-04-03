@@ -1,0 +1,35 @@
+{
+  "name": "orch",
+  "version": "0.1.0",
+  "description": "Local-first control plane for deterministic AI coding",
+  "license": "MIT",
+  "bin": {
+    "orch": "npm/orch.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "files": [
+    "cmd",
+    "internal",
+    "npm",
+    "scripts",
+    "main.go",
+    "go.mod",
+    "go.sum",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/furkanbeydemir/orch.git"
+  },
+  "bugs": {
+    "url": "https://github.com/furkanbeydemir/orch/issues"
+  },
+  "homepage": "https://github.com/furkanbeydemir/orch#readme",
+  "engines": {
+    "node": ">=18"
+  }
+}
