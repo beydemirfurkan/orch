@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.1.4 - 2026-04-03
+
+- feat: add live probe mode for doctor
 ## v0.1.3 - 2026-04-03
 
 - ci: harden npm install and release flow
