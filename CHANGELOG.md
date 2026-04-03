@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.1.5 - 2026-04-03
+
+- feat: add OAuth account failover for OpenAI
 ## v0.1.4 - 2026-04-03
 
 - feat: add live probe mode for doctor
