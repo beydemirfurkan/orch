@@ -255,7 +255,18 @@ Repo automation now expects:
 Release steps:
 
 ```bash
-# update version metadata first
+# update versions first
+npm run release:prepare -- 0.1.0
+
+# or bump semver automatically
+npm run release:patch
+npm run release:minor
+npm run release:major
+
+# or also create the git tag locally
+npm run release:prepare -- 0.1.0 --tag
+
+# push when ready
 git tag v0.1.0
 git push origin v0.1.0
 ```
@@ -266,6 +277,24 @@ The release workflow will:
 - build darwin/linux/windows binaries with GoReleaser
 - publish a GitHub Release with raw binary assets
 - publish the npm package
+
+`release:prepare` updates these files together:
+- `package.json`
+- `package-lock.json`
+- `cmd/version.go`
+
+By default it also refreshes `CHANGELOG.md` from git commit subjects since the last tag.
+
+If you prefer `make` targets:
+
+```bash
+make release-patch
+make release-minor
+make release-major
+make release-prepare VERSION=0.1.1
+make release-prepare VERSION=0.1.1 TAG=--tag
+make changelog VERSION=0.1.1
+```
 
 ---
 

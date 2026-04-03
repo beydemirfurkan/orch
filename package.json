@@ -8,13 +8,19 @@
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.js",
-    "pack:dry": "npm pack --dry-run"
+    "pack:dry": "npm pack --dry-run",
+    "changelog": "node scripts/changelog.js",
+    "release:prepare": "node scripts/release.js",
+    "release:patch": "node scripts/release.js patch",
+    "release:minor": "node scripts/release.js minor",
+    "release:major": "node scripts/release.js major"
   },
   "files": [
     "cmd",
     "internal",
     "npm",
     "scripts",
+    "CHANGELOG.md",
     "main.go",
     "go.mod",
     "go.sum",
