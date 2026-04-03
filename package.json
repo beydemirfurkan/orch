@@ -1,6 +1,6 @@
 {
   "name": "orch-code",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Local-first control plane for deterministic AI coding",
   "license": "MIT",
   "bin": {

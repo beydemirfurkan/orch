@@ -2,6 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.1.6 - 2026-04-03
+
+- feat: surface OAuth account health and failover
 ## v0.1.5 - 2026-04-03
 
 - feat: add OAuth account failover for OpenAI
