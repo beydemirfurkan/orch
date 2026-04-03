@@ -1,5 +1,5 @@
 {
-  "name": "orch",
+  "name": "@furkanbeydemir/orch",
   "version": "0.1.0",
   "description": "Local-first control plane for deterministic AI coding",
   "license": "MIT",

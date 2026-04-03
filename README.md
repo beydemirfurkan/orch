@@ -213,7 +213,7 @@ Default policy:
 Global install via npm:
 
 ```bash
-npm i -g orch
+npm i -g @furkanbeydemir/orch
 ```
 
 Installer behavior:
@@ -245,7 +245,7 @@ go run . <command>
 
 ### Release Flow
 
-`npm i -g orch` becomes zero-Go for end users once GitHub Releases and npm publish are both live.
+`npm i -g @furkanbeydemir/orch` becomes zero-Go for end users once GitHub Releases and npm publish are both live.
 
 Repo automation now expects:
 - GitHub Actions secret: `NPM_TOKEN`
