@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,12 @@ func TestAccountSessionFailsOverToNextCredential(t *testing.T) {
 	}
 	if nextToken != testSessionAccountToken("acc-2") {
 		t.Fatalf("expected second token, got %q", nextToken)
+	}
+	if notice := session.ConsumeNotice(); notice == "" || !strings.Contains(notice, "switched from acc-1 to acc-2") {
+		t.Fatalf("expected failover notice, got %q", notice)
+	}
+	if notice := session.ConsumeNotice(); notice != "" {
+		t.Fatalf("expected notice to be consumed, got %q", notice)
 	}
 
 	active, err := Get(repoRoot, "openai")

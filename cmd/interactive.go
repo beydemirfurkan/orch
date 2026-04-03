@@ -1045,6 +1045,15 @@ func executeChatPrompt(prompt string) (*chatExecutionResult, error) {
 			warning = warning + "; " + compactionNote
 		}
 	}
+	if accountSession != nil {
+		if notice := strings.TrimSpace(accountSession.ConsumeNotice()); notice != "" {
+			if warning == "" {
+				warning = notice
+			} else {
+				warning = warning + "; " + notice
+			}
+		}
+	}
 	if appendErr == nil {
 		turnCount := 1
 		if metrics, metricsErr := sessionCtx.Store.GetSessionMetrics(sessionCtx.Session.ID); metricsErr == nil && metrics != nil {

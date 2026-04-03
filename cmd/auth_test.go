@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +150,39 @@ func TestAuthLoginAPIKeyMode(t *testing.T) {
 	}
 	if cfg.Provider.OpenAI.AuthMode != "api_key" {
 		t.Fatalf("expected auth mode api_key, got %s", cfg.Provider.OpenAI.AuthMode)
+	}
+}
+
+func TestAuthListShowsCredentialDetails(t *testing.T) {
+	repoRoot := t.TempDir()
+	t.Chdir(repoRoot)
+
+	if err := config.EnsureOrchDir(repoRoot); err != nil {
+		t.Fatalf("ensure orch dir: %v", err)
+	}
+	if err := auth.Set(repoRoot, "openai", auth.Credential{
+		Type:          "oauth",
+		AccessToken:   "token-123",
+		RefreshToken:  "refresh-123",
+		AccountID:     "acc-123",
+		Email:         "user@example.com",
+		ExpiresAt:     time.Now().UTC().Add(time.Hour),
+		CooldownUntil: time.Now().UTC().Add(2 * time.Minute),
+		LastError:     "provider_rate_limited: chat rate limited",
+		LastUsedAt:    time.Now().UTC().Add(-5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("set oauth credential: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runAuthList(nil, nil); err != nil {
+			t.Fatalf("auth list: %v", err)
+		}
+	})
+
+	for _, expected := range []string{"status=active", "cooldown_until=", "last_used=", "last_error=provider_rate_limited", "expires_at="} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("expected output to contain %q, got:\n%s", expected, out)
+		}
 	}
 }

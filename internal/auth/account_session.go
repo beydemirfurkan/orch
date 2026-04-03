@@ -12,6 +12,7 @@ type AccountSession struct {
 	provider  string
 	currentID string
 	excluded  map[string]struct{}
+	notice    string
 }
 
 func NewAccountSession(repoRoot, provider string) *AccountSession {
@@ -40,6 +41,7 @@ func (s *AccountSession) Failover(ctx context.Context, cooldown time.Duration, r
 	if strings.TrimSpace(s.currentID) == "" {
 		return "", false, nil
 	}
+	fromID := s.currentID
 	if err := mutateCredential(s.repoRoot, s.provider, s.currentID, func(cred *Credential) error {
 		if cooldown > 0 {
 			cred.CooldownUntil = time.Now().UTC().Add(cooldown)
@@ -60,6 +62,7 @@ func (s *AccountSession) Failover(ctx context.Context, cooldown time.Duration, r
 		return "", false, nil
 	}
 	s.currentID = cred.ID
+	s.notice = buildFailoverNotice(fromID, cred.ID, reason)
 	return strings.TrimSpace(cred.AccessToken), true, nil
 }
 
@@ -76,6 +79,12 @@ func (s *AccountSession) MarkSuccess(ctx context.Context) {
 		return nil
 	})
 	s.excluded = map[string]struct{}{}
+}
+
+func (s *AccountSession) ConsumeNotice() string {
+	notice := strings.TrimSpace(s.notice)
+	s.notice = ""
+	return notice
 }
 
 func (s *AccountSession) pickCredential() (*Credential, error) {
@@ -151,4 +160,13 @@ func containsCredential(credentials []Credential, credentialID string) bool {
 		}
 	}
 	return false
+}
+
+func buildFailoverNotice(fromID, toID, reason string) string {
+	reason = strings.TrimSpace(reason)
+	message := fmt.Sprintf("OpenAI account failover: switched from %s to %s", fromID, toID)
+	if reason != "" {
+		message += " after " + reason
+	}
+	return message
 }

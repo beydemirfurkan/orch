@@ -332,9 +332,34 @@ func runAuthList(cmd *cobra.Command, args []string) error {
 			line += " account=" + cred.AccountID
 		}
 		fmt.Println(line)
+		for _, detail := range authCredentialDetails(cred, cred.ID == activeID) {
+			fmt.Printf("    %s\n", detail)
+		}
 	}
 
 	return nil
+}
+
+func authCredentialDetails(cred auth.Credential, active bool) []string {
+	details := make([]string, 0, 5)
+	if active {
+		details = append(details, "status=active")
+	}
+	if !cred.CooldownUntil.IsZero() {
+		if remaining := time.Until(cred.CooldownUntil); remaining > 0 {
+			details = append(details, fmt.Sprintf("cooldown_until=%s (%s remaining)", cred.CooldownUntil.UTC().Format(time.RFC3339), remaining.Round(time.Second)))
+		}
+	}
+	if !cred.LastUsedAt.IsZero() {
+		details = append(details, fmt.Sprintf("last_used=%s", cred.LastUsedAt.UTC().Format(time.RFC3339)))
+	}
+	if strings.TrimSpace(cred.LastError) != "" {
+		details = append(details, "last_error="+strings.TrimSpace(cred.LastError))
+	}
+	if cred.Type == "oauth" && !cred.ExpiresAt.IsZero() {
+		details = append(details, fmt.Sprintf("expires_at=%s", cred.ExpiresAt.UTC().Format(time.RFC3339)))
+	}
+	return details
 }
 
 func runAuthUse(cmd *cobra.Command, args []string) error {
