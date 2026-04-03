@@ -333,7 +333,10 @@ Validate runtime readiness:
 
 ```bash
 ./orch doctor
+./orch doctor --probe
 ```
+
+`--probe` runs a small live OpenAI chat check, which is useful for validating account-mode OAuth auth beyond local token shape checks.
 
 Generate a structured plan only:
 

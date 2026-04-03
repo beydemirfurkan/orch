@@ -9,9 +9,12 @@ import (
 
 	"github.com/furkanbeydemir/orch/internal/auth"
 	"github.com/furkanbeydemir/orch/internal/config"
+	"github.com/furkanbeydemir/orch/internal/providers"
 	"github.com/furkanbeydemir/orch/internal/providers/openai"
 	"github.com/spf13/cobra"
 )
+
+var doctorProbeFlag bool
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
@@ -21,6 +24,7 @@ var doctorCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(doctorCmd)
+	doctorCmd.Flags().BoolVar(&doctorProbeFlag, "probe", false, "Run a live provider chat probe")
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
@@ -85,8 +89,8 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	})
 
 	checks = append(checks, check{
-		name: "openai.account_refresh",
-		ok:   authMode != "account" || accountToken != "" || !storedAccount || storedRefresh || (storedCred != nil && storedCred.ExpiresAt.IsZero()) || time.Now().UTC().Before(storedCred.ExpiresAt),
+		name:   "openai.account_refresh",
+		ok:     authMode != "account" || accountToken != "" || !storedAccount || storedRefresh || (storedCred != nil && storedCred.ExpiresAt.IsZero()) || time.Now().UTC().Before(storedCred.ExpiresAt),
 		detail: fmt.Sprintf("required_when_expired=%t", authMode == "account" && accountToken == ""),
 	})
 
@@ -95,30 +99,27 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	checks = append(checks, check{name: "openai.model.reviewer", ok: strings.TrimSpace(cfg.Provider.OpenAI.Models.Reviewer) != "", detail: cfg.Provider.OpenAI.Models.Reviewer})
 
 	if cfg.Provider.Flags.OpenAIEnabled && defaultProvider == "openai" {
-		client := openai.New(cfg.Provider.OpenAI)
-		client.SetTokenResolver(func(ctx context.Context) (string, error) {
-			_ = ctx
-			if authMode == "api_key" {
-				if storedCred != nil && strings.TrimSpace(storedCred.Key) != "" {
-					return strings.TrimSpace(storedCred.Key), nil
-				}
-				return "", nil
-			}
-			resolved, resolveErr := auth.ResolveAccountAccessToken(cwd, "openai")
-			if resolveErr != nil {
-				return "", resolveErr
-			}
-			return resolved, nil
-		})
+		client := newDoctorOpenAIClient(cwd, cfg.Provider.OpenAI, authMode, storedCred)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		validateErr := client.Validate(ctx)
 		checks = append(checks, check{
-			name:   "openai.auth",
+			name:   "openai.auth.local",
 			ok:     validateErr == nil,
 			detail: errDetail(validateErr, "ok"),
 		})
+
+		if doctorProbeFlag {
+			probeCtx, probeCancel := context.WithTimeout(context.Background(), doctorProbeTimeout(cfg.Provider.OpenAI.TimeoutSeconds))
+			defer probeCancel()
+			probeErr := runOpenAIProbe(probeCtx, client, cfg.Provider.OpenAI.Models.Coder)
+			checks = append(checks, check{
+				name:   "openai.auth.probe",
+				ok:     probeErr == nil,
+				detail: errDetail(probeErr, "ok"),
+			})
+		}
 	}
 
 	failed := 0
@@ -146,4 +147,45 @@ func errDetail(err error, fallback string) string {
 		return fallback
 	}
 	return err.Error()
+}
+
+func newDoctorOpenAIClient(cwd string, cfg config.OpenAIProviderConfig, authMode string, storedCred *auth.Credential) *openai.Client {
+	client := openai.New(cfg)
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		_ = ctx
+		if authMode == "api_key" {
+			if storedCred != nil && strings.TrimSpace(storedCred.Key) != "" {
+				return strings.TrimSpace(storedCred.Key), nil
+			}
+			return "", nil
+		}
+		resolved, resolveErr := auth.ResolveAccountAccessToken(cwd, "openai")
+		if resolveErr != nil {
+			return "", resolveErr
+		}
+		return resolved, nil
+	})
+	return client
+}
+
+func runOpenAIProbe(ctx context.Context, client *openai.Client, model string) error {
+	_, err := client.Chat(ctx, providers.ChatRequest{
+		Role:            providers.RoleCoder,
+		Model:           strings.TrimSpace(model),
+		SystemPrompt:    "Reply with OK only.",
+		UserPrompt:      "ping",
+		ReasoningEffort: "low",
+	})
+	return err
+}
+
+func doctorProbeTimeout(timeoutSeconds int) time.Duration {
+	if timeoutSeconds <= 0 {
+		return 20 * time.Second
+	}
+	timeout := time.Duration(timeoutSeconds) * time.Second
+	if timeout > 20*time.Second {
+		return 20 * time.Second
+	}
+	return timeout
 }
