@@ -187,6 +187,9 @@ func TestChatAccountModeUsesCodexEndpointAccountHeaderAndInstructions(t *testing
 		if got := req.Header.Get("ChatGPT-Account-Id"); got != "acc-123" {
 			return nil, fmt.Errorf("unexpected account header: %s", got)
 		}
+		if got := req.Header.Get("Accept"); got != "text/event-stream" {
+			return nil, fmt.Errorf("unexpected accept header: %s", got)
+		}
 		if got := req.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ") {
 			return nil, fmt.Errorf("missing auth header")
 		}
@@ -224,7 +227,14 @@ func TestChatAccountModeUsesCodexEndpointAccountHeaderAndInstructions(t *testing
 		if got := payload["store"]; got != false {
 			return nil, fmt.Errorf("unexpected store flag: %#v", got)
 		}
-		return response(http.StatusOK, `{"output_text":"done","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`), nil
+		if got := payload["stream"]; got != true {
+			return nil, fmt.Errorf("unexpected stream flag: %#v", got)
+		}
+		return sseResponse(http.StatusOK, strings.Join([]string{
+			`data: {"type":"response.output_text.delta","delta":"done"}`,
+			`data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]}}`,
+			`data: [DONE]`,
+		}, "\n")), nil
 	}}
 
 	out, err := client.chatWithDoer(context.Background(), providers.ChatRequest{
@@ -236,6 +246,72 @@ func TestChatAccountModeUsesCodexEndpointAccountHeaderAndInstructions(t *testing
 		t.Fatalf("chat error: %v", err)
 	}
 	if strings.TrimSpace(out.Text) != "done" {
+		t.Fatalf("unexpected text: %q", out.Text)
+	}
+}
+
+func TestStreamAccountModeEmitsTokenEvents(t *testing.T) {
+	client := New(config.OpenAIProviderConfig{
+		AuthMode:        "account",
+		BaseURL:         "https://api.openai.com/v1",
+		AccountTokenEnv: "OPENAI_ACCOUNT_TOKEN",
+		Models: config.ProviderRoleModels{
+			Coder: "gpt-5.3-codex",
+		},
+	})
+	client.SetTokenResolver(func(ctx context.Context) (string, error) {
+		return testAccountToken("acc-123"), nil
+	})
+
+	events, errCh := client.streamWithDoer(context.Background(), providers.ChatRequest{
+		Role:         providers.RoleCoder,
+		SystemPrompt: "You are a constrained coding agent.",
+		UserPrompt:   "Say hello.",
+	}, &inspectDoer{fn: func(req *http.Request) (*http.Response, error) {
+		return sseResponse(http.StatusOK, strings.Join([]string{
+			`event: response.output_text.delta`,
+			`data: {"delta":"Hel"}`,
+			``,
+			`event: response.output_text.delta`,
+			`data: {"delta":"lo"}`,
+			``,
+			`event: response.completed`,
+			`data: {"response":{"status":"completed"}}`,
+			``,
+		}, "\n")), nil
+	}})
+
+	var chunks []string
+	for event := range events {
+		if event.Type == "token" {
+			chunks = append(chunks, event.Text)
+		}
+	}
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("stream error: %v", err)
+		}
+	}
+	if strings.Join(chunks, "") != "Hello" {
+		t.Fatalf("unexpected chunks: %#v", chunks)
+	}
+}
+
+func TestParseProviderResponseTreatsEventPrefixedBodyAsSSE(t *testing.T) {
+	resp := response(http.StatusOK, strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"delta":"Merhaba"}`,
+		``,
+		`event: response.completed`,
+		`data: {"response":{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Merhaba"}]}]}}`,
+		``,
+	}, "\n"))
+
+	out, err := parseProviderResponse(resp, mustReadBody(t, resp), "account")
+	if err != nil {
+		t.Fatalf("parseProviderResponse error: %v", err)
+	}
+	if out.Text != "Merhaba" {
 		t.Fatalf("unexpected text: %q", out.Text)
 	}
 }
@@ -275,4 +351,20 @@ func response(status int, body string) *http.Response {
 		Body:       io.NopCloser(strings.NewReader(body)),
 		Header:     make(http.Header),
 	}
+}
+
+func sseResponse(status int, body string) *http.Response {
+	resp := response(status, body)
+	resp.Header.Set("Content-Type", "text/event-stream")
+	return resp
+}
+
+func mustReadBody(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	resp.Body = io.NopCloser(strings.NewReader(string(body)))
+	return body
 }
