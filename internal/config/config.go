@@ -24,6 +24,31 @@ type Config struct {
 	Provider ProviderConfig `json:"provider"`
 	Skills   SkillsConfig   `json:"skills,omitempty"`
 	MCP      MCPConfig      `json:"mcp,omitempty"`
+	Council  CouncilConfig  `json:"council,omitempty"`
+}
+
+// CouncilConfig controls the multi-model consensus review mechanism.
+type CouncilConfig struct {
+	// Enabled activates council deliberation for qualifying tasks.
+	Enabled bool `json:"enabled"`
+	// Members lists the LLM participants. Each entry is "providerName:modelID".
+	Members []CouncilMemberConfig `json:"members,omitempty"`
+	// SynthesisMode is either "majority" (default, zero extra tokens) or "meta" (synthesiser LLM).
+	SynthesisMode string `json:"synthesisMode,omitempty"`
+	// SynthesizerModel is the "providerName:modelID" used in meta synthesis mode.
+	SynthesizerModel string `json:"synthesizerModel,omitempty"`
+	// TriggerRiskLevel activates council only when task risk is at or above this level.
+	// Valid values: "low", "medium", "high". Default: "high".
+	TriggerRiskLevel string `json:"triggerRiskLevel,omitempty"`
+	// MaxTokensPerMember caps tokens for each member's review call.
+	MaxTokensPerMember int `json:"maxTokensPerMember,omitempty"`
+}
+
+// CouncilMemberConfig describes one council participant.
+type CouncilMemberConfig struct {
+	// Model is "providerName:modelID" (e.g. "anthropic:claude-haiku-4-5").
+	Model string  `json:"model"`
+	Weight float64 `json:"weight,omitempty"`
 }
 
 // SkillsConfig controls which skills are enabled globally or per agent.
@@ -106,6 +131,7 @@ type SafetyFeatureFlags struct {
 	ExplorerEnabled bool `json:"explorerEnabled"`
 	OracleEnabled   bool `json:"oracleEnabled"`
 	FixerEnabled    bool `json:"fixerEnabled"`
+	CouncilEnabled  bool `json:"councilEnabled"`
 }
 
 type ProviderConfig struct {

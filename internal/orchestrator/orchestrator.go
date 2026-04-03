@@ -10,9 +10,9 @@ import (
 
 	"github.com/furkanbeydemir/orch/internal/agents"
 	"github.com/furkanbeydemir/orch/internal/auth"
-	"github.com/furkanbeydemir/orch/internal/skills"
 	"github.com/furkanbeydemir/orch/internal/confidence"
 	"github.com/furkanbeydemir/orch/internal/config"
+	"github.com/furkanbeydemir/orch/internal/council"
 	"github.com/furkanbeydemir/orch/internal/execution"
 	"github.com/furkanbeydemir/orch/internal/logger"
 	"github.com/furkanbeydemir/orch/internal/models"
@@ -24,6 +24,7 @@ import (
 	"github.com/furkanbeydemir/orch/internal/providers/openai"
 	"github.com/furkanbeydemir/orch/internal/repo"
 	reviewengine "github.com/furkanbeydemir/orch/internal/review"
+	"github.com/furkanbeydemir/orch/internal/skills"
 	testingengine "github.com/furkanbeydemir/orch/internal/testing"
 	"github.com/furkanbeydemir/orch/internal/tools"
 )
@@ -51,6 +52,8 @@ type Orchestrator struct {
 	confidencePolicy *confidence.Policy
 	toolRegistry     *tools.Registry
 	skillRegistry    *skills.Registry
+	// providerRegistry is kept so council members can be wired at runtime.
+	providerRegistry *providers.Registry
 	repoRoot         string
 	providerReady    bool
 	// verbose controls detailed log output.
@@ -96,47 +99,52 @@ func (o *Orchestrator) attachProviderRuntime() {
 	if o == nil || o.cfg == nil {
 		return
 	}
-	if !o.cfg.Provider.Flags.OpenAIEnabled {
-		return
-	}
-	mode := strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode))
-	hasEnvAPIKey := strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.APIKeyEnv)) != ""
-	if mode == "api_key" && !hasEnvAPIKey {
-		cred, err := auth.Get(o.repoRoot, "openai")
-		if err != nil || cred == nil || strings.ToLower(strings.TrimSpace(cred.Type)) != "api" || strings.TrimSpace(cred.Key) == "" {
-			return
-		}
-	}
 
 	registry := providers.NewRegistry()
-	client := openai.New(o.cfg.Provider.OpenAI)
-	var accountSession *auth.AccountSession
-	if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "account" && strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.AccountTokenEnv)) == "" {
-		accountSession = auth.NewAccountSession(o.repoRoot, "openai")
-		client.SetAccountFailoverHandler(func(ctx context.Context, err error) (string, bool, error) {
-			return accountSession.Failover(ctx, openai.AccountFailoverCooldown(err), err.Error())
-		})
-		client.SetAccountSuccessHandler(func(ctx context.Context) {
-			accountSession.MarkSuccess(ctx)
-		})
-	}
-	client.SetTokenResolver(func(ctx context.Context) (string, error) {
-		if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "api_key" {
+	registeredProviders := 0
+
+	if o.cfg.Provider.Flags.OpenAIEnabled {
+		mode := strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode))
+		hasEnvAPIKey := strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.APIKeyEnv)) != ""
+		hasOpenAICreds := true
+		if mode == "api_key" && !hasEnvAPIKey {
 			cred, err := auth.Get(o.repoRoot, "openai")
-			if err != nil || cred == nil {
-				return "", err
+			if err != nil || cred == nil || strings.ToLower(strings.TrimSpace(cred.Type)) != "api" || strings.TrimSpace(cred.Key) == "" {
+				hasOpenAICreds = false
 			}
-			if strings.ToLower(strings.TrimSpace(cred.Type)) == "api" {
-				return strings.TrimSpace(cred.Key), nil
+		}
+		if hasOpenAICreds {
+			client := openai.New(o.cfg.Provider.OpenAI)
+			var accountSession *auth.AccountSession
+			if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "account" && strings.TrimSpace(os.Getenv(o.cfg.Provider.OpenAI.AccountTokenEnv)) == "" {
+				accountSession = auth.NewAccountSession(o.repoRoot, "openai")
+				client.SetAccountFailoverHandler(func(ctx context.Context, err error) (string, bool, error) {
+					return accountSession.Failover(ctx, openai.AccountFailoverCooldown(err), err.Error())
+				})
+				client.SetAccountSuccessHandler(func(ctx context.Context) {
+					accountSession.MarkSuccess(ctx)
+				})
 			}
-			return "", nil
+			client.SetTokenResolver(func(ctx context.Context) (string, error) {
+				if strings.ToLower(strings.TrimSpace(o.cfg.Provider.OpenAI.AuthMode)) == "api_key" {
+					cred, err := auth.Get(o.repoRoot, "openai")
+					if err != nil || cred == nil {
+						return "", err
+					}
+					if strings.ToLower(strings.TrimSpace(cred.Type)) == "api" {
+						return strings.TrimSpace(cred.Key), nil
+					}
+					return "", nil
+				}
+				if accountSession == nil {
+					return "", nil
+				}
+				return accountSession.ResolveToken(ctx)
+			})
+			registry.Register(client)
+			registeredProviders++
 		}
-		if accountSession == nil {
-			return "", nil
-		}
-		return accountSession.ResolveToken(ctx)
-	})
-	registry.Register(client)
+	}
 
 	// Register Anthropic provider if API key is available.
 	anthropicKey := strings.TrimSpace(os.Getenv(o.cfg.Provider.Anthropic.APIKeyEnv))
@@ -148,6 +156,7 @@ func (o *Orchestrator) attachProviderRuntime() {
 			MaxRetries:     o.cfg.Provider.Anthropic.MaxRetries,
 		}
 		registry.Register(anthropicprovider.New(anthropicCfg))
+		registeredProviders++
 	}
 
 	// Register Ollama provider if explicitly enabled in config.
@@ -157,10 +166,16 @@ func (o *Orchestrator) attachProviderRuntime() {
 			TimeoutSeconds: o.cfg.Provider.Ollama.TimeoutSeconds,
 		}
 		registry.Register(ollamaprovider.New(ollamaCfg))
+		registeredProviders++
+	}
+
+	if registeredProviders == 0 {
+		return
 	}
 
 	router := providers.NewRouter(o.cfg, registry)
 	runtime := &agents.LLMRuntime{Router: router}
+	o.providerRegistry = registry
 	o.providerReady = true
 
 	if planner, ok := o.planner.(*agents.Planner); ok {
@@ -618,6 +633,114 @@ func (o *Orchestrator) stepTest(state *models.RunState) error {
 	return nil
 }
 
+// buildCouncil constructs a Council from the config, wiring up each member's Chat function
+// directly from the provider registry. Returns nil if council is not configured/enabled.
+func (o *Orchestrator) buildCouncil() *council.Council {
+	cfg := o.cfg.Council
+	if !o.cfg.Safety.FeatureFlags.CouncilEnabled || !cfg.Enabled || len(cfg.Members) == 0 {
+		return nil
+	}
+	if o.providerRegistry == nil {
+		return nil
+	}
+
+	members := make([]council.CouncilMember, 0, len(cfg.Members))
+	for _, mc := range cfg.Members {
+		if strings.TrimSpace(mc.Model) == "" {
+			continue
+		}
+		idx := strings.Index(mc.Model, ":")
+		if idx <= 0 {
+			o.log.Log("council", "warn", fmt.Sprintf("invalid council member model %q (expected providerName:modelID)", mc.Model))
+			continue
+		}
+		providerName := strings.ToLower(strings.TrimSpace(mc.Model[:idx]))
+		modelID := strings.TrimSpace(mc.Model[idx+1:])
+		provider, err := o.providerRegistry.Get(providerName)
+		if err != nil {
+			o.log.Log("council", "warn", fmt.Sprintf("council member provider %q not registered: %v", providerName, err))
+			continue
+		}
+		w := mc.Weight
+		if w <= 0 {
+			w = 1
+		}
+		// Capture loop variables for the closure.
+		p := provider
+		m := modelID
+		members = append(members, council.CouncilMember{
+			ProviderName: providerName,
+			ModelID:      modelID,
+			Weight:       w,
+			Chat: func(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
+				req.Model = m
+				return p.Chat(ctx, req)
+			},
+		})
+	}
+
+	if len(members) == 0 {
+		return nil
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(cfg.SynthesisMode))
+	if mode == "" {
+		mode = "majority"
+	}
+
+	var synthChat func(context.Context, providers.ChatRequest) (providers.ChatResponse, error)
+	if mode == "meta" && strings.TrimSpace(cfg.SynthesizerModel) != "" {
+		idx := strings.Index(cfg.SynthesizerModel, ":")
+		if idx > 0 {
+			synthProviderName := strings.ToLower(strings.TrimSpace(cfg.SynthesizerModel[:idx]))
+			synthModelID := strings.TrimSpace(cfg.SynthesizerModel[idx+1:])
+			if sp, err := o.providerRegistry.Get(synthProviderName); err == nil {
+				sm := synthModelID
+				synthChat = func(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
+					req.Model = sm
+					return sp.Chat(ctx, req)
+				}
+			}
+		}
+	}
+
+	maxTok := cfg.MaxTokensPerMember
+	if maxTok <= 0 {
+		maxTok = o.cfg.Budget.ReviewerMaxTokens
+	}
+
+	return &council.Council{
+		Members:              members,
+		SynthesisMode:        mode,
+		SynthesizerChat:      synthChat,
+		MaxTokens:            maxTok,
+		MinSuccessfulMembers: len(members)/2 + 1,
+	}
+}
+
+// councilShouldTrigger returns true when council should be used for this state's task.
+func (o *Orchestrator) councilShouldTrigger(state *models.RunState) bool {
+	if !o.cfg.Safety.FeatureFlags.CouncilEnabled || !o.cfg.Council.Enabled {
+		return false
+	}
+	if state.TaskBrief == nil {
+		return false
+	}
+	trigger := strings.ToLower(strings.TrimSpace(o.cfg.Council.TriggerRiskLevel))
+	if trigger == "" {
+		trigger = "high"
+	}
+	taskRisk := strings.ToLower(string(state.TaskBrief.RiskLevel))
+	switch trigger {
+	case "low":
+		return true // trigger on any risk
+	case "medium":
+		return taskRisk == "medium" || taskRisk == "high"
+	default: // "high"
+		return taskRisk == "high"
+	}
+}
+
 func (o *Orchestrator) stepReview(state *models.RunState) error {
 	if err := Transition(state, models.StatusReviewing); err != nil {
 		return err
@@ -638,6 +761,37 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 		TestResults:       state.TestResults,
 		MaxTokens:         o.cfg.Budget.ReviewerMaxTokens,
 		SkillHints:        o.skillHintsForAgent("reviewer"),
+	}
+
+	// Council deliberation path: replace single reviewer with multi-model consensus.
+	if c := o.buildCouncil(); c != nil && o.councilShouldTrigger(state) {
+		o.log.Log("council", "start", fmt.Sprintf("Council deliberating with %d member(s), mode=%s", len(c.Members), c.SynthesisMode))
+		prompt := buildReviewPromptForCouncil(input)
+		verdict, err := c.Deliberate(context.Background(), prompt)
+		if err != nil {
+			o.log.Log("council", "error", fmt.Sprintf("Council failed, falling back to single reviewer: %v", err))
+		} else {
+			o.log.Log("council", "verdict", fmt.Sprintf("decision=%s confidence=%.2f consensus=%v dissent=%v", verdict.Decision, verdict.Confidence, verdict.Consensus, verdict.Dissent))
+			for _, vote := range verdict.MemberVotes {
+				o.recordUsageForModel(state, "reviewing", string(providers.RoleReviewer), vote.ProviderName+":"+vote.ModelID, vote.Usage)
+			}
+			providerReview := reviewResultFromCouncilVerdict(verdict)
+			scorecard, finalReview := o.reviewEngine.Evaluate(state, providerReview)
+			state.ReviewScorecard = scorecard
+			state.Review = finalReview
+			state.Confidence = o.confidenceScorer.Score(state)
+			if state.Review == nil {
+				return fmt.Errorf("review engine did not produce a review result")
+			}
+			if state.Confidence != nil {
+				o.log.Log("confidence", "score", fmt.Sprintf("score=%.2f band=%s", state.Confidence.Score, state.Confidence.Band))
+			}
+			if err := o.confidencePolicy.Apply(state); err != nil {
+				return fmt.Errorf("confidence policy blocked completion: %w", err)
+			}
+			o.log.Log("council", "review", fmt.Sprintf("Council review completed: %s", state.Review.Decision))
+			return nil
+		}
 	}
 
 	output, err := o.reviewer.Execute(input)
@@ -667,6 +821,134 @@ func (o *Orchestrator) stepReview(state *models.RunState) error {
 	}
 	o.log.Log("reviewer", "review", fmt.Sprintf("Review completed: %s", state.Review.Decision))
 	return nil
+}
+
+// buildReviewPromptForCouncil assembles the review prompt from an agent Input.
+func buildReviewPromptForCouncil(input *agents.Input) string {
+	if input == nil || input.Task == nil {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Task: ")
+	b.WriteString(input.Task.Description)
+	if input.TaskBrief != nil {
+		b.WriteString("\nTask Type: ")
+		b.WriteString(string(input.TaskBrief.TaskType))
+		b.WriteString("\nRisk Level: ")
+		b.WriteString(string(input.TaskBrief.RiskLevel))
+	}
+	if input.ExecutionContract != nil {
+		if len(input.ExecutionContract.AllowedFiles) > 0 {
+			b.WriteString("\nAllowed Files: ")
+			b.WriteString(strings.Join(input.ExecutionContract.AllowedFiles, ", "))
+		}
+		if len(input.ExecutionContract.RequiredEdits) > 0 {
+			b.WriteString("\nRequired Edits: ")
+			b.WriteString(strings.Join(input.ExecutionContract.RequiredEdits, " | "))
+		}
+		if len(input.ExecutionContract.Invariants) > 0 {
+			b.WriteString("\nInvariants: ")
+			b.WriteString(strings.Join(input.ExecutionContract.Invariants, " | "))
+		}
+	}
+	if input.Patch != nil {
+		b.WriteString(fmt.Sprintf("\nPatch size: %d chars", len(input.Patch.RawDiff)))
+		if len(input.Patch.Files) > 0 {
+			paths := make([]string, 0, len(input.Patch.Files))
+			for _, file := range input.Patch.Files {
+				if strings.TrimSpace(file.Path) != "" {
+					paths = append(paths, file.Path)
+				}
+			}
+			if len(paths) > 0 {
+				b.WriteString("\nTouched Files: ")
+				b.WriteString(strings.Join(paths, ", "))
+			}
+		}
+		trimmedDiff := truncateForPrompt(strings.TrimSpace(input.Patch.RawDiff), 12000)
+		if trimmedDiff != "" {
+			b.WriteString("\nPatch Diff:\n")
+			b.WriteString(trimmedDiff)
+		}
+	}
+	if len(input.ValidationResults) > 0 {
+		parts := make([]string, 0, len(input.ValidationResults))
+		for _, vr := range input.ValidationResults {
+			part := fmt.Sprintf("%s=%s", vr.Name, vr.Status)
+			if strings.TrimSpace(vr.Summary) != "" {
+				part += " (" + vr.Summary + ")"
+			}
+			parts = append(parts, part)
+		}
+		b.WriteString("\nValidation Gates: ")
+		b.WriteString(strings.Join(parts, ", "))
+	}
+	if input.TestResults != "" {
+		b.WriteString("\nTest Results: ")
+		b.WriteString(truncateForPrompt(input.TestResults, 4000))
+	}
+	if input.Plan != nil && len(input.Plan.AcceptanceCriteria) > 0 {
+		crits := make([]string, 0, len(input.Plan.AcceptanceCriteria))
+		for _, c := range input.Plan.AcceptanceCriteria {
+			crits = append(crits, c.Description)
+		}
+		b.WriteString("\nAcceptance Criteria: ")
+		b.WriteString(strings.Join(crits, " | "))
+	}
+	b.WriteString("\nDecide ACCEPT or REVISE with brief reasoning.")
+	return b.String()
+}
+
+func reviewResultFromCouncilVerdict(verdict *council.CouncilVerdict) *models.ReviewResult {
+	if verdict == nil {
+		return nil
+	}
+	decision := verdict.Decision
+	if !verdict.Consensus {
+		decision = models.ReviewRevise
+	}
+	comments := []string{
+		fmt.Sprintf("Council verdict: decision=%s confidence=%.2f consensus=%v dissent=%v", decision, verdict.Confidence, verdict.Consensus, verdict.Dissent),
+		verdict.Reasoning,
+	}
+	if !verdict.Consensus {
+		comments = append(comments, "Council did not reach consensus; review is downgraded to REVISE.")
+	}
+	for _, vote := range verdict.MemberVotes {
+		comments = append(comments,
+			fmt.Sprintf("[%s/%s] %s", vote.ProviderName, vote.ModelID, vote.Decision),
+			vote.Reasoning,
+		)
+	}
+	return &models.ReviewResult{
+		Decision: decision,
+		Comments: uniqueNonEmptyStrings(comments),
+	}
+}
+
+func truncateForPrompt(text string, maxChars int) string {
+	trimmed := strings.TrimSpace(text)
+	if maxChars <= 0 || len(trimmed) <= maxChars {
+		return trimmed
+	}
+	return trimmed[:maxChars] + "\n...[truncated]"
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func (o *Orchestrator) stepValidateWithRetries(state *models.RunState) error {
@@ -917,10 +1199,13 @@ func patchFilePaths(p *models.Patch) []string {
 }
 
 func (o *Orchestrator) recordUsage(state *models.RunState, stage, role string, usage providers.Usage) {
+	o.recordUsageForModel(state, stage, role, o.modelIDForRole(role), usage)
+}
+
+func (o *Orchestrator) recordUsageForModel(state *models.RunState, stage, role, modelID string, usage providers.Usage) {
 	if usage.TotalTokens == 0 {
 		return
 	}
-	modelID := o.modelIDForRole(role)
 	cost := providers.EstimateCostUSD(modelID, usage.InputTokens, usage.OutputTokens)
 	state.TokenUsages = append(state.TokenUsages, models.TokenUsage{
 		Stage:         stage,

@@ -534,6 +534,39 @@ Example `safety` config:
 }
 ```
 
+### Example `council` config
+
+Council review is opt-in and stays disabled by default.
+To enable it, turn on both the feature flag and the council block.
+
+```json
+{
+  "safety": {
+    "featureFlags": {
+      "councilEnabled": true
+    }
+  },
+  "council": {
+    "enabled": true,
+    "triggerRiskLevel": "high",
+    "synthesisMode": "majority",
+    "maxTokensPerMember": 1536,
+    "members": [
+      {"model": "openai:gpt-5.3-codex", "weight": 1},
+      {"model": "anthropic:claude-sonnet-4", "weight": 1},
+      {"model": "ollama:qwen2.5-coder", "weight": 1}
+    ]
+  }
+}
+```
+
+Notes:
+- `members[].model` must be `providerName:modelID`
+- `triggerRiskLevel` supports `low`, `medium`, or `high`
+- `synthesisMode` supports `majority` or `meta`
+- when `synthesisMode` is `meta`, also set `synthesizerModel`
+- council review currently downgrades non-consensus outcomes to `REVISE`
+
 ---
 
 ## Architecture
